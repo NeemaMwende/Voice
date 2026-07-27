@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  min-height: 100%;
+  background: radial-gradient(1200px 700px at 15% -10%, #181a3a 0%, transparent 55%),
+    radial-gradient(1000px 600px at 100% 0%, #2a1140 0%, transparent 50%), #0a0b13;
+  color: #e9ecff;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(124, 92, 255, 0.4);
+  border-radius: 9px;
+}
+
+audio {
+  filter: saturate(1.2);
+}
+audio::-webkit-media-controls-panel {
+  background: #161829;
+}
