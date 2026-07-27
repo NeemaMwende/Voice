@@ -2,14 +2,83 @@
 
 import { useRef, useState } from "react";
 import { useApp, Recording } from "@/context/AppContext";
-import { pickDemo, fmtSize } from "@/lib/demo";
+import { fmtSize } from "@/lib/demo";
 import { IconMic } from "@/components/icons";
 import NotesViewer from "@/components/NotesViewer";
 import { toast } from "@/components/Toast";
 
 type Stage = "idle" | "uploading" | "transcribing" | "analyzing" | "done";
 
+type TranscriptionSegment = {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+};
+
+type TranscriptionResponse = {
+  transcript: string;
+  segments: TranscriptionSegment[];
+  language: string;
+  duration: number | null;
+};
+
 const WAVE_BARS = Array.from({ length: 44 });
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+
+function formatTimestamp(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function recordingFromResponse(
+  response: TranscriptionResponse,
+  file: File,
+  audioUrl: string
+): Recording {
+  const title = file.name.replace(/\.[^.]+$/, "") || "Untitled recording";
+  const transcriptWithSpeakers = response.segments.length
+    ? response.segments
+        .map(
+          (segment) =>
+            `[${formatTimestamp(segment.start)}] ${segment.speaker}: ${segment.text}`
+        )
+        .join("\n\n")
+    : response.transcript;
+  const highlights = response.segments
+    .map((segment) => segment.text.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return {
+    id: crypto.randomUUID(),
+    title,
+    transcript: transcriptWithSpeakers,
+    summary: [
+      {
+        heading: "Overview",
+        body: response.transcript || "No speech was detected in this recording.",
+      },
+      ...(highlights.length
+        ? [{ heading: "Transcript highlights", bullets: highlights }]
+        : []),
+    ],
+    key: [
+      `Language: ${response.language || "unknown"}`,
+      `Duration: ${formatTimestamp(response.duration ?? 0)}`,
+      `${response.segments.length} transcript segment${
+        response.segments.length === 1 ? "" : "s"
+      }`,
+    ],
+    tags: ["Transcription", response.language || "Unknown language"],
+    durationSec: Math.round(response.duration ?? 0),
+    fileName: file.name,
+    sizeBytes: file.size,
+    createdAt: Date.now(),
+    audioUrl,
+  };
+}
 
 export default function UploadPage() {
   const { addRecording } = useApp();
@@ -21,60 +90,69 @@ export default function UploadPage() {
   const [result, setResult] = useState<Recording | null>(null);
   const busy = stage !== "idle" && stage !== "done";
 
-  const animate = (dur: number, onDone: () => void) => {
-    const t0 = performance.now();
-    const step = (t: number) => {
-      const p = Math.min(1, (t - t0) / dur);
-      setPct(Math.round(100 * (0.5 - Math.cos(p * Math.PI) / 2)));
-      if (p < 1) requestAnimationFrame(step);
-      else onDone();
-    };
-    requestAnimationFrame(step);
-  };
-
-  const handle = (f: File) => {
+  const handle = async (f: File) => {
     if (busy) return;
     const okType = f.type.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|webm|aac|flac)$/i.test(f.name);
     if (!okType) {
       toast("Please upload an audio file");
       return;
     }
+    if (f.size > 200 * 1024 * 1024) {
+      toast("Audio files must be 200 MB or smaller");
+      return;
+    }
+
     const url = URL.createObjectURL(f);
     setFile({ name: f.name, size: f.size, url });
     setResult(null);
-    setPct(0);
+    setPct(15);
     setStage("uploading");
 
-    animate(1300, () => {
+    try {
+      const formData = new FormData();
+      formData.append("file", f);
+
       setStage("transcribing");
-      setPct(0);
-      animate(2400, () => {
-        setStage("analyzing");
-        setPct(0);
-        animate(1500, () => {
-          const demo = pickDemo();
-          const rec: Recording = {
-            ...demo,
-            id: crypto.randomUUID(),
-            fileName: f.name,
-            sizeBytes: f.size,
-            createdAt: Date.now(),
-            audioUrl: url,
-          };
-          setResult(rec);
-          addRecording(rec);
-          setStage("done");
-          toast("Notes generated");
-        });
+      setPct(55);
+      const apiResponse = await fetch(`${API_URL}/transcribe`, {
+        method: "POST",
+        body: formData,
       });
-    });
+
+      if (!apiResponse.ok) {
+        const errorBody = await apiResponse.json().catch(() => null);
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : `Transcription failed (${apiResponse.status})`;
+        throw new Error(detail);
+      }
+
+      setStage("analyzing");
+      setPct(85);
+      const transcription: TranscriptionResponse = await apiResponse.json();
+      const rec = recordingFromResponse(transcription, f, url);
+      setResult(rec);
+      addRecording(rec);
+      setPct(100);
+      setStage("done");
+      toast("Transcription complete");
+    } catch (error) {
+      setStage("idle");
+      setPct(0);
+      toast(
+        error instanceof Error
+          ? error.message
+          : "Could not reach the transcription service"
+      );
+    }
   };
 
   const stageLabel: Record<Stage, string> = {
     idle: "",
     uploading: "Uploading…",
     transcribing: "Transcribing…",
-    analyzing: "Generating notes…",
+    analyzing: "Preparing notes…",
     done: "✓ Complete",
   };
   const pctLabel: Record<Stage, string> = {
