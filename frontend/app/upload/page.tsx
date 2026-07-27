@@ -12,7 +12,76 @@ import { toast } from "@/components/Toast";
 type Stage = "idle" | "uploading" | "transcribing" | "analyzing" | "done";
 type Mode = "upload" | "record";
 
+type TranscriptionSegment = {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+};
+
+type TranscriptionResponse = {
+  transcript: string;
+  segments: TranscriptionSegment[];
+  language: string;
+  duration: number | null;
+};
+
 const WAVE_BARS = Array.from({ length: 44 });
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+
+function formatTimestamp(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function recordingFromResponse(
+  response: TranscriptionResponse,
+  file: File,
+  audioUrl: string
+): Recording {
+  const title = file.name.replace(/\.[^.]+$/, "") || "Untitled recording";
+  const transcriptWithSpeakers = response.segments.length
+    ? response.segments
+        .map(
+          (segment) =>
+            `[${formatTimestamp(segment.start)}] ${segment.speaker}: ${segment.text}`
+        )
+        .join("\n\n")
+    : response.transcript;
+  const highlights = response.segments
+    .map((segment) => segment.text.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return {
+    id: crypto.randomUUID(),
+    title,
+    transcript: transcriptWithSpeakers,
+    summary: [
+      {
+        heading: "Overview",
+        body: response.transcript || "No speech was detected in this recording.",
+      },
+      ...(highlights.length
+        ? [{ heading: "Transcript highlights", bullets: highlights }]
+        : []),
+    ],
+    key: [
+      `Language: ${response.language || "unknown"}`,
+      `Duration: ${formatTimestamp(response.duration ?? 0)}`,
+      `${response.segments.length} transcript segment${
+        response.segments.length === 1 ? "" : "s"
+      }`,
+    ],
+    tags: ["Transcription", response.language || "Unknown language"],
+    durationSec: Math.round(response.duration ?? 0),
+    fileName: file.name,
+    sizeBytes: file.size,
+    createdAt: Date.now(),
+    audioUrl,
+  };
+}
 
 type Source = { name: string; size: number; url: string; durationSec?: number };
 
@@ -42,7 +111,7 @@ export default function UploadPage() {
   const process = (src: Source, verb: string) => {
     setFile(src);
     setResult(null);
-    setPct(0);
+    setPct(15);
     setStage("uploading");
 
     animate(verb === "upload" ? 1300 : 800, () => {
@@ -68,7 +137,34 @@ export default function UploadPage() {
           toast("Notes generated");
         });
       });
-    });
+
+      if (!apiResponse.ok) {
+        const errorBody = await apiResponse.json().catch(() => null);
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : `Transcription failed (${apiResponse.status})`;
+        throw new Error(detail);
+      }
+
+      setStage("analyzing");
+      setPct(85);
+      const transcription: TranscriptionResponse = await apiResponse.json();
+      const rec = recordingFromResponse(transcription, f, url);
+      setResult(rec);
+      addRecording(rec);
+      setPct(100);
+      setStage("done");
+      toast("Transcription complete");
+    } catch (error) {
+      setStage("idle");
+      setPct(0);
+      toast(
+        error instanceof Error
+          ? error.message
+          : "Could not reach the transcription service"
+      );
+    }
   };
 
   const handleFile = (f: File) => {
@@ -85,7 +181,7 @@ export default function UploadPage() {
     idle: "",
     uploading: mode === "record" ? "Capturing…" : "Uploading…",
     transcribing: "Transcribing…",
-    analyzing: "Generating notes…",
+    analyzing: "Preparing notes…",
     done: "✓ Complete",
   };
   const pctLabel: Record<Stage, string> = {
