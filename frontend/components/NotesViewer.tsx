@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Recording } from "@/context/AppContext";
 import { IconCopy, IconDownload } from "./icons";
 import { toast } from "./Toast";
+import TranscriptView from "./TranscriptView";
 
 const TABS = ["Notes", "Transcript", "Key Points"] as const;
 
@@ -90,9 +91,7 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
           </div>
         )}
 
-        {tab === "Transcript" && (
-          <p className="text-[#cfd3f0] whitespace-pre-wrap leading-7">{rec.transcript}</p>
-        )}
+        {tab === "Transcript" && <TranscriptView rec={rec} />}
 
         {tab === "Key Points" && (
           <div>

@@ -70,3 +70,29 @@ export const IconSearch = ({ className }: P) => (
     <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
   </svg>
 );
+
+export const IconStop = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <rect x="6" y="6" width="12" height="12" rx="2.5" />
+  </svg>
+);
+
+export const IconPause = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <rect x="6" y="5" width="4" height="14" rx="1.5" /><rect x="14" y="5" width="4" height="14" rx="1.5" />
+  </svg>
+);
+
+export const IconSparkle = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z" />
+    <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" />
+  </svg>
+);
+
+export const IconUsers = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);

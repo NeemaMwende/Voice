@@ -3,21 +3,27 @@
 import { useRef, useState } from "react";
 import { useApp, Recording } from "@/context/AppContext";
 import { pickDemo, fmtSize } from "@/lib/demo";
-import { IconMic } from "@/components/icons";
+import { IconMic, IconUpload } from "@/components/icons";
 import NotesViewer from "@/components/NotesViewer";
+import LiveRecorder from "@/components/LiveRecorder";
+import PageHeader from "@/components/PageHeader";
 import { toast } from "@/components/Toast";
 
 type Stage = "idle" | "uploading" | "transcribing" | "analyzing" | "done";
+type Mode = "upload" | "record";
 
 const WAVE_BARS = Array.from({ length: 44 });
+
+type Source = { name: string; size: number; url: string; durationSec?: number };
 
 export default function UploadPage() {
   const { addRecording } = useApp();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<Mode>("upload");
   const [drag, setDrag] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
   const [pct, setPct] = useState(0);
-  const [file, setFile] = useState<{ name: string; size: number; url: string } | null>(null);
+  const [file, setFile] = useState<Source | null>(null);
   const [result, setResult] = useState<Recording | null>(null);
   const busy = stage !== "idle" && stage !== "done";
 
@@ -32,20 +38,14 @@ export default function UploadPage() {
     requestAnimationFrame(step);
   };
 
-  const handle = (f: File) => {
-    if (busy) return;
-    const okType = f.type.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|webm|aac|flac)$/i.test(f.name);
-    if (!okType) {
-      toast("Please upload an audio file");
-      return;
-    }
-    const url = URL.createObjectURL(f);
-    setFile({ name: f.name, size: f.size, url });
+  // shared pipeline for both upload + live recording
+  const process = (src: Source, verb: string) => {
+    setFile(src);
     setResult(null);
     setPct(0);
     setStage("uploading");
 
-    animate(1300, () => {
+    animate(verb === "upload" ? 1300 : 800, () => {
       setStage("transcribing");
       setPct(0);
       animate(2400, () => {
@@ -55,11 +55,12 @@ export default function UploadPage() {
           const demo = pickDemo();
           const rec: Recording = {
             ...demo,
+            durationSec: src.durationSec ?? demo.durationSec,
             id: crypto.randomUUID(),
-            fileName: f.name,
-            sizeBytes: f.size,
+            fileName: src.name,
+            sizeBytes: src.size,
             createdAt: Date.now(),
-            audioUrl: url,
+            audioUrl: src.url,
           };
           setResult(rec);
           addRecording(rec);
@@ -70,16 +71,26 @@ export default function UploadPage() {
     });
   };
 
+  const handleFile = (f: File) => {
+    if (busy) return;
+    const okType = f.type.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|webm|aac|flac)$/i.test(f.name);
+    if (!okType) {
+      toast("Please upload an audio file");
+      return;
+    }
+    process({ name: f.name, size: f.size, url: URL.createObjectURL(f) }, "upload");
+  };
+
   const stageLabel: Record<Stage, string> = {
     idle: "",
-    uploading: "Uploading…",
+    uploading: mode === "record" ? "Capturing…" : "Uploading…",
     transcribing: "Transcribing…",
     analyzing: "Generating notes…",
     done: "✓ Complete",
   };
   const pctLabel: Record<Stage, string> = {
     idle: "",
-    uploading: "uploaded",
+    uploading: mode === "record" ? "captured" : "uploaded",
     transcribing: "transcribed",
     analyzing: "analyzed",
     done: "done",
@@ -87,41 +98,72 @@ export default function UploadPage() {
 
   return (
     <div>
-      <PageHeader title="Upload & Transcribe" subtitle="Drop a recording — we'll transcribe it and pull out the key notes." />
+      <PageHeader
+        title="Capture & Transcribe"
+        subtitle="Upload a file or record live — we transcribe it, split it by speaker, and pull out the key notes."
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-6">
-        {/* Upload card */}
+        {/* Input card */}
         <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
-          <div
-            onClick={() => !busy && inputRef.current?.click()}
-            onDragEnter={(e) => { e.preventDefault(); setDrag(true); }}
-            onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-            onDragLeave={(e) => { e.preventDefault(); setDrag(false); }}
-            onDrop={(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]); }}
-            className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all ${
-              drag
-                ? "border-neon3 bg-neon3/10 shadow-[inset_0_0_40px_-8px_rgba(255,78,205,0.5)]"
-                : "border-neon/40 hover:border-neon2 bg-gradient-to-b from-neon/5 to-transparent hover:-translate-y-0.5"
-            }`}
-          >
-            <div className="mx-auto mb-4 grid h-[74px] w-[74px] place-items-center rounded-full bg-[radial-gradient(circle_at_30%_30%,#7c5cff,#3a1a8a)] animate-pulse2">
-              <IconMic className="w-8 h-8 text-white" />
-            </div>
-            <div className="text-lg font-semibold mb-1.5">Drag &amp; drop your audio here</div>
-            <div className="text-[13px] text-muted">
-              or <span className="text-neon2 underline underline-offset-4">browse files</span>
-            </div>
-            <div className="mt-3.5 text-[11px] text-muted tracking-wide">
-              MP3 · WAV · M4A · OGG · WEBM — up to 200 MB
-            </div>
-            <input
-              ref={inputRef}
-              type="file"
-              accept="audio/*"
-              hidden
-              onChange={(e) => e.target.files?.[0] && handle(e.target.files[0])}
-            />
+          {/* mode switch */}
+          <div className="mb-6 flex gap-1.5 rounded-2xl bg-white/[0.04] p-1.5">
+            {([
+              { m: "upload" as const, label: "Upload file", Icon: IconUpload },
+              { m: "record" as const, label: "Record live", Icon: IconMic },
+            ]).map(({ m, label, Icon }) => (
+              <button
+                key={m}
+                onClick={() => !busy && setMode(m)}
+                disabled={busy}
+                className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-[13px] font-semibold transition-all disabled:cursor-not-allowed ${
+                  mode === m
+                    ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_6px_18px_-6px_#7c5cff]"
+                    : "text-muted hover:text-white"
+                }`}
+              >
+                <Icon className="h-4 w-4" /> {label}
+              </button>
+            ))}
           </div>
+
+          {mode === "upload" ? (
+            <div
+              onClick={() => !busy && inputRef.current?.click()}
+              onDragEnter={(e) => { e.preventDefault(); setDrag(true); }}
+              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={(e) => { e.preventDefault(); setDrag(false); }}
+              onDrop={(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}
+              className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all ${
+                drag
+                  ? "border-neon3 bg-neon3/10 shadow-[inset_0_0_40px_-8px_rgba(255,78,205,0.5)]"
+                  : "border-neon/40 hover:border-neon2 bg-gradient-to-b from-neon/5 to-transparent hover:-translate-y-0.5"
+              }`}
+            >
+              <div className="mx-auto mb-4 grid h-[74px] w-[74px] place-items-center rounded-full bg-[radial-gradient(circle_at_30%_30%,#7c5cff,#3a1a8a)] animate-pulse2">
+                <IconUpload className="w-8 h-8 text-white" />
+              </div>
+              <div className="text-lg font-semibold mb-1.5">Drag &amp; drop your audio here</div>
+              <div className="text-[13px] text-muted">
+                or <span className="text-neon2 underline underline-offset-4">browse files</span>
+              </div>
+              <div className="mt-3.5 text-[11px] text-muted tracking-wide">
+                MP3 · WAV · M4A · OGG · WEBM — up to 200 MB
+              </div>
+              <input
+                ref={inputRef}
+                type="file"
+                accept="audio/*"
+                hidden
+                onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+              />
+            </div>
+          ) : (
+            <LiveRecorder
+              disabled={busy}
+              onComplete={(src) => process(src, "record")}
+            />
+          )}
 
           {/* waveform */}
           <div className={`flex items-center justify-center gap-1 overflow-hidden transition-all ${stage === "transcribing" ? "h-[54px] mt-5" : "h-0"}`}>
@@ -169,26 +211,21 @@ export default function UploadPage() {
         <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           <h2 className="text-[15px] font-semibold mb-1">Generated Notes</h2>
           <p className="text-[12.5px] text-muted mb-5">
-            Transcript &amp; AI summary appear here once processing finishes.
+            Speaker-split transcript &amp; AI summary appear here once processing finishes.
           </p>
           {result ? (
             <NotesViewer rec={result} />
           ) : (
             <div className="text-center text-muted py-14 text-[13px]">
-              {busy ? "Working on it…" : "No notes yet — upload an audio file to get started."}
+              {busy
+                ? "Working on it…"
+                : mode === "record"
+                ? "No notes yet — hit record to get started."
+                : "No notes yet — upload an audio file to get started."}
             </div>
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function PageHeader({ title, subtitle }: { title: string; subtitle: string }) {
-  return (
-    <div className="mb-7">
-      <h1 className="text-[26px] font-bold tracking-tight">{title}</h1>
-      <p className="text-[13.5px] text-muted mt-1">{subtitle}</p>
     </div>
   );
 }

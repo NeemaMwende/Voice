@@ -7,7 +7,7 @@ import { useApp } from "@/context/AppContext";
 
 const nav = [
   { href: "/", label: "Overview", Icon: IconGrid },
-  { href: "/upload", label: "Upload & Transcribe", Icon: IconUpload },
+  { href: "/upload", label: "Capture & Transcribe", Icon: IconUpload },
   { href: "/recordings", label: "Recordings", Icon: IconWave },
   { href: "/notes", label: "Notes", Icon: IconNotes },
 ];
@@ -57,8 +57,8 @@ export default function Sidebar() {
         <div className="rounded-2xl border border-white/[0.08] p-4 bg-white/[0.03]">
           <div className="text-xs font-semibold text-neon2 mb-1">Demo Mode</div>
           <p className="text-[11px] text-muted leading-relaxed">
-            Transcription is simulated. Wire the upload handler to Whisper or
-            Deepgram to go live.
+            Live mic capture is real; transcription &amp; diarization are simulated.
+            Wire the pipeline to Whisper or Deepgram to go live.
           </p>
         </div>
       </div>
