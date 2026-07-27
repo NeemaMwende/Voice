@@ -40,10 +40,10 @@ export default function NotesPage() {
   }
 
   return (
-    <div>
+    <div className="flex flex-col min-h-[calc(100vh-4rem)]">
       <PageHeader title="Notes" subtitle="Every set of generated notes, in one place." />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6">
+      <div className="grid flex-1 min-h-0 grid-cols-1 items-stretch gap-6 lg:grid-cols-[300px_1fr]">
         {/* list */}
         <div className="space-y-2.5">
           {recordings.map((r) => (
@@ -72,15 +72,17 @@ export default function NotesPage() {
         </div>
 
         {/* viewer */}
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="flex min-h-0 flex-col rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           {active && (
             <>
-              <div className="mb-5">
+              <div className="mb-5 shrink-0">
                 <h2 className="text-[17px] font-bold">{active.title}</h2>
                 <p className="text-[12px] text-muted mt-0.5">{active.fileName}</p>
               </div>
-              {active.audioUrl && <audio src={active.audioUrl} controls className="mb-5 w-full rounded-xl" />}
-              <NotesViewer key={active.id} rec={active} />
+              {active.audioUrl && <audio src={active.audioUrl} controls className="mb-5 w-full rounded-xl shrink-0" />}
+              <div className="min-h-0 flex-1">
+                <NotesViewer key={active.id} rec={active} />
+              </div>
             </>
           )}
         </div>
