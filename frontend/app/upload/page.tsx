@@ -97,15 +97,15 @@ export default function UploadPage() {
   };
 
   return (
-    <div>
+    <div className="flex flex-col min-h-[calc(100vh-4rem)]">
       <PageHeader
         title="Capture & Transcribe"
         subtitle="Upload a file or record live — we transcribe it, split it by speaker, and pull out the key notes."
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-6">
+      <div className="grid flex-1 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
         {/* Input card */}
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="self-start rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           {/* mode switch */}
           <div className="mb-6 flex gap-1.5 rounded-2xl bg-white/[0.04] p-1.5">
             {([
@@ -208,20 +208,24 @@ export default function UploadPage() {
         </div>
 
         {/* Notes card */}
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="flex flex-col rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           <h2 className="text-[15px] font-semibold mb-1">Generated Notes</h2>
           <p className="text-[12.5px] text-muted mb-5">
             Speaker-split transcript &amp; AI summary appear here once processing finishes.
           </p>
           {result ? (
-            <NotesViewer rec={result} />
+            <div className="min-h-0 flex-1">
+              <NotesViewer rec={result} />
+            </div>
           ) : (
-            <div className="text-center text-muted py-14 text-[13px]">
-              {busy
-                ? "Working on it…"
-                : mode === "record"
-                ? "No notes yet — hit record to get started."
-                : "No notes yet — upload an audio file to get started."}
+            <div className="grid flex-1 place-items-center text-center text-muted text-[13px]">
+              <span>
+                {busy
+                  ? "Working on it…"
+                  : mode === "record"
+                  ? "No notes yet — hit record to get started."
+                  : "No notes yet — upload an audio file to get started."}
+              </span>
             </div>
           )}
         </div>
