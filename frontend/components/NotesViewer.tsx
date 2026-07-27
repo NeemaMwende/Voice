@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Recording } from "@/context/AppContext";
 import { IconCopy, IconDownload } from "./icons";
 import { toast } from "./Toast";
+import TranscriptView from "./TranscriptView";
 
 const TABS = ["Notes", "Transcript", "Key Points"] as const;
 
@@ -42,13 +43,13 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
   };
 
   return (
-    <div className="animate-fade">
-      <div className="flex gap-1.5 bg-white/[0.04] p-1.5 rounded-xl mb-4">
+    <div className="animate-fade flex h-full min-h-0 flex-col">
+      <div className="flex gap-1.5 bg-white/[0.04] p-1.5 rounded-xl mb-4 shrink-0">
         {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`flex-1 py-2.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex-1 py-2.5 text-[13px] font-semibold rounded-lg transition-all ${
               tab === t
                 ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_6px_18px_-6px_#7c5cff]"
                 : "text-muted hover:text-white"
@@ -59,17 +60,17 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
         ))}
       </div>
 
-      <div className="max-h-[360px] overflow-auto pr-2 text-sm leading-relaxed">
+      <div className="flex-1 min-h-0 overflow-auto pr-2 text-[15px] leading-7">
         {tab === "Notes" && (
           <div>
             {rec.summary.map((s, i) => (
-              <div key={i} className="mb-4">
-                <h4 className="text-[11px] uppercase tracking-[0.08em] text-neon2 mb-2">
+              <div key={i} className="mb-5">
+                <h4 className="text-[12px] uppercase tracking-[0.08em] text-neon2 mb-2">
                   {s.heading}
                 </h4>
                 {s.body && <p className="text-[#cfd3f0]">{s.body}</p>}
                 {s.bullets && (
-                  <ul className="list-disc ml-5 text-[#d3d7f5] space-y-1.5">
+                  <ul className="list-disc ml-5 text-[#d3d7f5] space-y-2">
                     {s.bullets.map((b, j) => (
                       <li key={j}>{b}</li>
                     ))}
@@ -81,7 +82,7 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
               {rec.tags.map((t) => (
                 <span
                   key={t}
-                  className="text-[11px] px-2.5 py-1 rounded-full bg-neon2/10 text-neon2 border border-neon2/20"
+                  className="text-[12px] px-2.5 py-1 rounded-full bg-neon2/10 text-neon2 border border-neon2/20"
                 >
                   {t}
                 </span>
@@ -90,16 +91,14 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
           </div>
         )}
 
-        {tab === "Transcript" && (
-          <p className="text-[#cfd3f0] whitespace-pre-wrap leading-7">{rec.transcript}</p>
-        )}
+        {tab === "Transcript" && <TranscriptView rec={rec} />}
 
         {tab === "Key Points" && (
           <div>
-            <h4 className="text-[11px] uppercase tracking-[0.08em] text-neon2 mb-2">
+            <h4 className="text-[12px] uppercase tracking-[0.08em] text-neon2 mb-2">
               Key Points &amp; Action Items
             </h4>
-            <ul className="list-disc ml-5 text-[#d3d7f5] space-y-2">
+            <ul className="list-disc ml-5 text-[#d3d7f5] space-y-2.5">
               {rec.key.map((k, i) => (
                 <li key={i}>{k}</li>
               ))}
@@ -108,16 +107,16 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
         )}
       </div>
 
-      <div className="flex gap-2.5 mt-5">
+      <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-white/[0.08]">
         <button
           onClick={copy}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold bg-gradient-to-br from-neon to-neon2 text-white hover:-translate-y-0.5 transition-transform"
+          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-gradient-to-br from-neon to-neon2 text-white hover:-translate-y-0.5 transition-transform"
         >
           <IconCopy className="w-4 h-4" /> Copy notes
         </button>
         <button
           onClick={download}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold bg-white/[0.06] border border-white/10 hover:bg-white/[0.1] transition-colors"
+          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-white/[0.06] border border-white/10 hover:bg-white/[0.1] transition-colors"
         >
           <IconDownload className="w-4 h-4" /> Download
         </button>
