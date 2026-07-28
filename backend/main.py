@@ -12,6 +12,8 @@ import os
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.environ["MKL_THREADING_LAYER"] = "sequential"
 
+import asyncio
+import concurrent.futures
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -83,6 +85,10 @@ model = WhisperModel(
     compute_type=COMPUTE_TYPE,
     cpu_threads=CPU_THREADS,
 )
+
+# Progress tracking for polling-based progress bar
+_progress_store: Dict[str, dict] = {}
+_inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 class SpeakerSegment(BaseModel):
@@ -269,7 +275,78 @@ def health():
     }
 
 
-@app.post("/transcribe", response_model=TranscriptionResponse)
+def _transcribe_with_progress(
+    audio_path: str,
+    num_speakers: Optional[int],
+    audio_url: str,
+    progress_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Run full transcription pipeline in a background thread, reporting progress."""
+    try:
+        _progress_store[progress_id] = {"pct": 1, "status": "transcribing"}
+
+        segments, info = model.transcribe(
+            audio_path,
+            beam_size=BEAM_SIZE,
+            language=LANGUAGE,
+            condition_on_previous_text=False,
+            word_timestamps=True,
+            vad_filter=USE_VAD,
+        )
+        raw_segments: list[Any] = []
+        for seg in segments:
+            raw_segments.append(seg)
+            total = max(float(info.duration) if hasattr(info, "duration") and info.duration else 1.0, float(seg.end))
+            pct = min(int(seg.end / total * 100), 99)
+            _progress_store[progress_id] = {"pct": pct, "status": "transcribing"}
+
+        transcript = " ".join(
+            getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
+        ).strip()
+
+        # Diarize + merge; fall back to single-speaker grouping if unavailable.
+        try:
+            turns = diarization.diarize(audio_path, num_speakers=num_speakers)
+        except diarization.DiarizationUnavailable as exc:
+            print(f"[diarization] unavailable: {exc}")
+            turns = []
+
+        if turns:
+            words = flatten_words(raw_segments)
+            speaker_segments = merge_words_with_speakers(words, turns)
+        else:
+            speaker_segments = build_default_speaker_segments(raw_segments)
+
+        speaker_segments = consolidate_segments(speaker_segments)
+
+        # Summarize (best-effort).
+        summary_text: Optional[str] = None
+        key_points: List[str] = []
+        try:
+            result = summarization.summarize(transcript)
+            summary_text = result["summary"] or None
+            key_points = result["key_points"]
+        except summarization.SummaryUnavailable as exc:
+            print(f"[summarization] unavailable: {exc}")
+
+        response = TranscriptionResponse(
+            transcript=transcript,
+            segments=[SpeakerSegment(**segment) for segment in speaker_segments],
+            language=getattr(info, "language", "unknown"),
+            duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") and info.duration else None,
+            summary=summary_text,
+            key_points=key_points,
+            audio_url=audio_url,
+        )
+
+        _progress_store[progress_id] = {"pct": 100, "status": "complete", "result": response.model_dump()}
+        return None
+    except Exception as exc:
+        _progress_store[progress_id] = {"pct": 0, "status": "error", "error": str(exc)}
+        return None
+
+
+@app.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
     num_speakers: Optional[int] = Form(None),
@@ -278,55 +355,28 @@ async def transcribe(
         raise HTTPException(status_code=400, detail="Upload a valid audio file.")
 
     audio_path, audio_url = save_upload(file)
-    segments, info = model.transcribe(
+    progress_id = str(uuid.uuid4())
+    _progress_store[progress_id] = {"pct": 0, "status": "queued"}
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(
+        _inference_executor,
+        _transcribe_with_progress,
         audio_path,
-        beam_size=BEAM_SIZE,
-        language=LANGUAGE,
-        condition_on_previous_text=False,
-        word_timestamps=True,
-        vad_filter=USE_VAD,
+        num_speakers,
+        audio_url,
+        progress_id,
     )
-    raw_segments = list(segments)
 
-    transcript = " ".join(
-        getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
-    ).strip()
+    return {"progress_id": progress_id}
 
-    # Diarize + merge; fall back to single-speaker grouping if unavailable.
-    try:
-        turns = diarization.diarize(audio_path, num_speakers=num_speakers)
-    except diarization.DiarizationUnavailable as exc:
-        print(f"[diarization] unavailable: {exc}")
-        turns = []
 
-    if turns:
-        words = flatten_words(raw_segments)
-        speaker_segments = merge_words_with_speakers(words, turns)
-    else:
-        speaker_segments = build_default_speaker_segments(raw_segments)
-
-    # Collapse consecutive same-speaker turns into one consolidated block.
-    speaker_segments = consolidate_segments(speaker_segments)
-
-    # Summarize into an overview + key points (best-effort; never fatal).
-    summary_text: Optional[str] = None
-    key_points: List[str] = []
-    try:
-        result = summarization.summarize(transcript)
-        summary_text = result["summary"] or None
-        key_points = result["key_points"]
-    except summarization.SummaryUnavailable as exc:
-        print(f"[summarization] unavailable: {exc}")
-
-    return TranscriptionResponse(
-        transcript=transcript,
-        segments=[SpeakerSegment(**segment) for segment in speaker_segments],
-        language=getattr(info, "language", "unknown"),
-        duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") else None,
-        summary=summary_text,
-        key_points=key_points,
-        audio_url=audio_url,
-    )
+@app.get("/transcribe/progress/{progress_id}")
+async def get_progress(progress_id: str):
+    entry = _progress_store.get(progress_id)
+    if entry is None:
+        return {"pct": 0, "status": "unknown"}
+    return entry
 
 
 # ---------------------------------------------------------------------------
