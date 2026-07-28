@@ -7,6 +7,11 @@ words into readable turns.
 """
 
 import os
+
+# Fix MKL memory issue on Windows — must be set before numpy/torch imports
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ["MKL_THREADING_LAYER"] = "sequential"
+
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
