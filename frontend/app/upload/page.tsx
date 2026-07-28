@@ -120,7 +120,7 @@ export default function UploadPage() {
   const process = async (src: Source) => {
     setFile(src);
     setResult(null);
-    setPct(15);
+    setPct(0);
     setStage("uploading");
 
     try {
@@ -134,27 +134,47 @@ export default function UploadPage() {
       if (Number.isFinite(n) && n > 0) form.append("num_speakers", String(n));
 
       setStage("transcribing");
-      setPct(45);
+      setPct(2);
 
-      const apiResponse = await fetch(`${API_URL}/transcribe`, { method: "POST", body: form });
-      if (!apiResponse.ok) {
-        const errorBody = await apiResponse.json().catch(() => null);
+      // Submit — backend returns a progress_id immediately
+      const submitRes = await fetch(`${API_URL}/transcribe`, { method: "POST", body: form });
+      if (!submitRes.ok) {
+        const errorBody = await submitRes.json().catch(() => null);
         const detail =
           typeof errorBody?.detail === "string"
             ? errorBody.detail
-            : `Transcription failed (${apiResponse.status})`;
+            : `Transcription failed (${submitRes.status})`;
         throw new Error(detail);
       }
 
-      setStage("analyzing");
-      setPct(85);
-      const transcription: TranscriptionResponse = await apiResponse.json();
-      const rec = recordingFromResponse(transcription, src);
-      setResult(rec);
-      addRecording(rec);
-      setPct(100);
-      setStage("done");
-      toast("Transcription complete");
+      const { progress_id } = await submitRes.json();
+
+      // Poll progress every 500ms
+      const poll = setInterval(async () => {
+        try {
+          const res = await fetch(`${API_URL}/transcribe/progress/${progress_id}`);
+          const data = await res.json();
+          if (data.status === "error") {
+            clearInterval(poll);
+            throw new Error(data.error || "Transcription failed");
+          }
+          setPct(data.pct);
+          if (data.status === "complete" && data.result) {
+            clearInterval(poll);
+            setStage("analyzing");
+            setPct(100);
+            const transcription: TranscriptionResponse = data.result;
+            const rec = recordingFromResponse(transcription, src);
+            setResult(rec);
+            addRecording(rec);
+            setStage("done");
+            toast("Transcription complete");
+          }
+        } catch (err) {
+          clearInterval(poll);
+          throw err;
+        }
+      }, 500);
     } catch (error) {
       setStage("idle");
       setPct(0);
