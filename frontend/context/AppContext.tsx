@@ -1,9 +1,9 @@
 "use client";
 
 import { createContext, useContext, useState, ReactNode } from "react";
-import { DemoContent } from "@/lib/demo";
+import { NoteContent } from "@/lib/notes";
 
-export type Recording = DemoContent & {
+export type Recording = NoteContent & {
   id: string;
   fileName: string;
   sizeBytes: number;

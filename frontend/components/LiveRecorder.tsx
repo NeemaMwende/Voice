@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { IconMic, IconStop, IconPause, IconPlay } from "./icons";
-import { fmtDuration } from "@/lib/demo";
+import { fmtDuration } from "@/lib/notes";
 import { toast } from "./Toast";
 
 type Status = "idle" | "recording" | "paused";

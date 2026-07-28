@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Recording } from "@/context/AppContext";
-import { diffRaw, fmtStamp, initials, Speaker } from "@/lib/demo";
+import { diffRaw, fmtStamp, initials, Speaker } from "@/lib/notes";
 import { IconSparkle, IconUsers } from "./icons";
 
 type Mode = "clean" | "verbatim";

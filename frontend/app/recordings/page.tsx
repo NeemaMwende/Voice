@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
-import { fmtDuration, fmtSize } from "@/lib/demo";
+import { fmtDuration, fmtSize } from "@/lib/notes";
 import PageHeader from "@/components/PageHeader";
 import { IconPlay, IconSearch, IconTrash, IconWave, IconUpload } from "@/components/icons";
 

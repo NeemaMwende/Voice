@@ -55,10 +55,10 @@ export default function Sidebar() {
 
       <div className="mt-auto pt-6">
         <div className="rounded-2xl border border-white/[0.08] p-4 bg-white/[0.03]">
-          <div className="text-xs font-semibold text-neon2 mb-1">Demo Mode</div>
+          <div className="text-xs font-semibold text-neon2 mb-1">Live pipeline</div>
           <p className="text-[11px] text-muted leading-relaxed">
-            Live mic capture is real; transcription &amp; diarization are simulated.
-            Wire the pipeline to Whisper or Deepgram to go live.
+            Upload or record, then Whisper transcribes and pyannote splits it by
+            speaker. Start the backend on port 8000.
           </p>
         </div>
       </div>

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
-import { fmtDuration } from "@/lib/demo";
+import { fmtDuration } from "@/lib/notes";
 import PageHeader from "@/components/PageHeader";
 import { IconWave, IconClock, IconNotes, IconUpload, IconPlay } from "@/components/icons";
 

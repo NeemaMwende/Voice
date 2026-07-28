@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
-import { fmtDuration } from "@/lib/demo";
+import { fmtDuration } from "@/lib/notes";
 import PageHeader from "@/components/PageHeader";
 import NotesViewer from "@/components/NotesViewer";
 import { IconNotes, IconUpload } from "@/components/icons";

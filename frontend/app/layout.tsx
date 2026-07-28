@@ -18,7 +18,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Background />
           <div className="relative z-10 flex">
             <Sidebar />
-            <main className="flex-1 min-w-0 min-h-screen px-8 py-8">{children}</main>
+            <main className="flex-1 min-w-0 min-h-screen">
+              <div className="mx-auto w-full max-w-[1360px] px-8 py-8">{children}</div>
+            </main>
           </div>
           <Toaster />
         </AppProvider>

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useApp, Recording } from "@/context/AppContext";
-import { pickDemo, fmtSize } from "@/lib/demo";
+import { fmtSize, Speaker, Segment } from "@/lib/notes";
 import { IconMic, IconUpload } from "@/components/icons";
 import NotesViewer from "@/components/NotesViewer";
 import LiveRecorder from "@/components/LiveRecorder";
@@ -28,6 +28,7 @@ type TranscriptionResponse = {
 
 const WAVE_BARS = Array.from({ length: 44 });
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const SPEAKER_COLORS = ["#7c5cff", "#00e5ff", "#ff4ecd", "#2ee6a6", "#ffb454"];
 
 function formatTimestamp(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -35,20 +36,32 @@ function formatTimestamp(seconds: number): string {
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
-function recordingFromResponse(
-  response: TranscriptionResponse,
-  file: File,
-  audioUrl: string
-): Recording {
-  const title = file.name.replace(/\.[^.]+$/, "") || "Untitled recording";
-  const transcriptWithSpeakers = response.segments.length
-    ? response.segments
-        .map(
-          (segment) =>
-            `[${formatTimestamp(segment.start)}] ${segment.speaker}: ${segment.text}`
-        )
-        .join("\n\n")
-    : response.transcript;
+const slugifySpeaker = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "speaker";
+
+type Source = { name: string; size: number; url: string; durationSec?: number };
+
+function recordingFromResponse(response: TranscriptionResponse, src: Source): Recording {
+  const title = src.name.replace(/\.[^.]+$/, "") || "Untitled recording";
+
+  // distinct speakers, in first-seen order → colored Speaker[]
+  const order: string[] = [];
+  for (const s of response.segments) {
+    if (!order.includes(s.speaker)) order.push(s.speaker);
+  }
+  const speakers: Speaker[] = (order.length ? order : ["Speaker 1"]).map((name, i) => ({
+    id: slugifySpeaker(name),
+    name,
+    color: SPEAKER_COLORS[i % SPEAKER_COLORS.length],
+  }));
+
+  // backend returns cleaned text only, so raw === clean (no noise diff to show)
+  const segments: Segment[] = response.segments.map((s) => ({
+    speakerId: slugifySpeaker(s.speaker),
+    tSec: s.start,
+    raw: s.text.trim(),
+    clean: s.text.trim(),
+  }));
+
   const highlights = response.segments
     .map((segment) => segment.text.trim())
     .filter(Boolean)
@@ -57,7 +70,9 @@ function recordingFromResponse(
   return {
     id: crypto.randomUUID(),
     title,
-    transcript: transcriptWithSpeakers,
+    transcript: response.transcript || segments.map((s) => s.clean).join(" "),
+    speakers,
+    segments,
     summary: [
       {
         heading: "Overview",
@@ -75,15 +90,13 @@ function recordingFromResponse(
       }`,
     ],
     tags: ["Transcription", response.language || "Unknown language"],
-    durationSec: Math.round(response.duration ?? 0),
-    fileName: file.name,
-    sizeBytes: file.size,
+    durationSec: Math.round(response.duration ?? src.durationSec ?? 0),
+    fileName: src.name,
+    sizeBytes: src.size,
     createdAt: Date.now(),
-    audioUrl,
+    audioUrl: src.url,
   };
 }
-
-type Source = { name: string; size: number; url: string; durationSec?: number };
 
 export default function UploadPage() {
   const { addRecording } = useApp();
@@ -96,48 +109,23 @@ export default function UploadPage() {
   const [result, setResult] = useState<Recording | null>(null);
   const busy = stage !== "idle" && stage !== "done";
 
-  const animate = (dur: number, onDone: () => void) => {
-    const t0 = performance.now();
-    const step = (t: number) => {
-      const p = Math.min(1, (t - t0) / dur);
-      setPct(Math.round(100 * (0.5 - Math.cos(p * Math.PI) / 2)));
-      if (p < 1) requestAnimationFrame(step);
-      else onDone();
-    };
-    requestAnimationFrame(step);
-  };
-
   // shared pipeline for both upload + live recording
-  const process = (src: Source, verb: string) => {
+  const process = async (src: Source) => {
     setFile(src);
     setResult(null);
     setPct(15);
     setStage("uploading");
 
-    animate(verb === "upload" ? 1300 : 800, () => {
-      setStage("transcribing");
-      setPct(0);
-      animate(2400, () => {
-        setStage("analyzing");
-        setPct(0);
-        animate(1500, () => {
-          const demo = pickDemo();
-          const rec: Recording = {
-            ...demo,
-            durationSec: src.durationSec ?? demo.durationSec,
-            id: crypto.randomUUID(),
-            fileName: src.name,
-            sizeBytes: src.size,
-            createdAt: Date.now(),
-            audioUrl: src.url,
-          };
-          setResult(rec);
-          addRecording(rec);
-          setStage("done");
-          toast("Notes generated");
-        });
-      });
+    try {
+      // pull the blob back out of the object URL so we can POST the real bytes
+      const blob = await fetch(src.url).then((r) => r.blob());
+      const form = new FormData();
+      form.append("file", blob, src.name);
 
+      setStage("transcribing");
+      setPct(45);
+
+      const apiResponse = await fetch(`${API_URL}/transcribe`, { method: "POST", body: form });
       if (!apiResponse.ok) {
         const errorBody = await apiResponse.json().catch(() => null);
         const detail =
@@ -150,7 +138,7 @@ export default function UploadPage() {
       setStage("analyzing");
       setPct(85);
       const transcription: TranscriptionResponse = await apiResponse.json();
-      const rec = recordingFromResponse(transcription, f, url);
+      const rec = recordingFromResponse(transcription, src);
       setResult(rec);
       addRecording(rec);
       setPct(100);
@@ -160,9 +148,9 @@ export default function UploadPage() {
       setStage("idle");
       setPct(0);
       toast(
-        error instanceof Error
+        error instanceof Error && error.message.startsWith("Transcription failed")
           ? error.message
-          : "Could not reach the transcription service"
+          : "Couldn't reach the transcription service. Is the backend running?"
       );
     }
   };
@@ -174,7 +162,7 @@ export default function UploadPage() {
       toast("Please upload an audio file");
       return;
     }
-    process({ name: f.name, size: f.size, url: URL.createObjectURL(f) }, "upload");
+    void process({ name: f.name, size: f.size, url: URL.createObjectURL(f) });
   };
 
   const stageLabel: Record<Stage, string> = {
@@ -257,7 +245,7 @@ export default function UploadPage() {
           ) : (
             <LiveRecorder
               disabled={busy}
-              onComplete={(src) => process(src, "record")}
+              onComplete={(src) => void process(src)}
             />
           )}
 
