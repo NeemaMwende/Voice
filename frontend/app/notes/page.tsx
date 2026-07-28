@@ -9,8 +9,14 @@ import NotesViewer from "@/components/NotesViewer";
 import { IconNotes, IconUpload } from "@/components/icons";
 
 export default function NotesPage() {
-  const { recordings } = useApp();
+  const { recordings, loading } = useApp();
   const [selected, setSelected] = useState<string | null>(null);
+
+  // Open a specific recording's notes when linked as /notes?id=<id>.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("id");
+    if (id) setSelected(id);
+  }, []);
 
   useEffect(() => {
     if (!selected && recordings.length) setSelected(recordings[0].id);
@@ -20,6 +26,17 @@ export default function NotesPage() {
   }, [recordings, selected]);
 
   const active = recordings.find((r) => r.id === selected) ?? null;
+
+  if (loading) {
+    return (
+      <div>
+        <PageHeader title="Notes" subtitle="Every set of generated notes, in one place." />
+        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center text-[13.5px] text-muted">
+          Loading your notes…
+        </div>
+      </div>
+    );
+  }
 
   if (recordings.length === 0) {
     return (

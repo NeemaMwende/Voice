@@ -2,6 +2,8 @@ fastapi
 uvicorn[standard]
 python-multipart
 python-dotenv
+sqlalchemy
+psycopg2-binary
 faster-whisper
 aiofiles
 pyannote.audio

@@ -8,7 +8,7 @@ import PageHeader from "@/components/PageHeader";
 import { IconPlay, IconSearch, IconTrash, IconWave, IconUpload } from "@/components/icons";
 
 export default function RecordingsPage() {
-  const { recordings, removeRecording } = useApp();
+  const { recordings, removeRecording, loading } = useApp();
   const [q, setQ] = useState("");
   const [playing, setPlaying] = useState<string | null>(null);
 
@@ -33,7 +33,11 @@ export default function RecordingsPage() {
         />
       </div>
 
-      {recordings.length === 0 ? (
+      {loading ? (
+        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center text-[13.5px] text-muted">
+          Loading your recordings…
+        </div>
+      ) : recordings.length === 0 ? (
         <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center">
           <IconWave className="w-14 h-14 mx-auto opacity-30 mb-4 text-muted" />
           <p className="text-[13.5px] text-muted mb-5">No recordings yet.</p>
@@ -58,12 +62,12 @@ export default function RecordingsPage() {
                 >
                   <IconPlay className="w-4 h-4 text-white" />
                 </button>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate text-sm font-semibold">{r.title}</div>
+                <Link href={`/notes?id=${r.id}`} className="flex-1 min-w-0 group">
+                  <div className="truncate text-sm font-semibold group-hover:text-neon2 transition-colors">{r.title}</div>
                   <div className="text-[11.5px] text-muted truncate">
                     {r.fileName} · {new Date(r.createdAt).toLocaleString()} · {fmtSize(r.sizeBytes)}
                   </div>
-                </div>
+                </Link>
                 <div className="hidden sm:flex flex-wrap gap-1.5 justify-end max-w-[220px]">
                   {r.tags.map((t) => (
                     <span key={t} className="text-[10.5px] px-2 py-0.5 rounded-full bg-neon2/10 text-neon2 border border-neon2/20">
@@ -72,7 +76,7 @@ export default function RecordingsPage() {
                   ))}
                 </div>
                 <div className="text-xs text-neon2 shrink-0 w-12 text-right">{fmtDuration(r.durationSec)}</div>
-                <Link href="/notes" className="text-[11px] text-muted hover:text-white shrink-0">
+                <Link href={`/notes?id=${r.id}`} className="text-[11px] text-muted hover:text-white shrink-0">
                   Notes →
                 </Link>
                 <button

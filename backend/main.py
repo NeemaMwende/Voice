@@ -7,26 +7,33 @@ words into readable turns.
 """
 
 import os
-import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-load_dotenv()  # read backend/.env (HF_TOKEN, OLLAMA_URL, OLLAMA_MODEL, …)
+load_dotenv()  # read backend/.env (HF_TOKEN, OLLAMA_URL, OLLAMA_MODEL, PG_*, …)
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
 import diarization
 import summarization
+import db
 
 # When one speaker holds the floor, keep their words in a single block instead
 # of one bubble per Whisper segment. A pause longer than this (seconds) inside
 # that block becomes a paragraph break so long turns stay readable.
 PARAGRAPH_GAP_SEC = float(os.environ.get("PARAGRAPH_GAP_SEC", "2.0"))
+
+# Uploaded audio is kept here so playback survives a page reload (object URLs
+# don't). Served read-only under /media (StaticFiles handles range requests).
+MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "media"))
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="EchoNotes Transcription Backend")
 app.add_middleware(
@@ -35,6 +42,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    try:
+        db.init_db()
+        print("[db] recordings table ready")
+    except Exception as exc:  # noqa: BLE001 - keep transcription usable if DB is down
+        print(f"[db] init failed (persistence disabled): {exc}")
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "small")
 DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
@@ -77,16 +94,21 @@ class TranscriptionResponse(BaseModel):
     duration: Optional[float] = None
     summary: Optional[str] = None
     key_points: List[str] = []
+    audio_url: Optional[str] = None
 
 
-def save_upload(upload_file: UploadFile) -> str:
+def save_upload(upload_file: UploadFile) -> tuple[str, str]:
+    """Persist the upload under MEDIA_DIR. Returns (disk_path, media_url).
+
+    The file is kept (not deleted) so it can be replayed after a reload; the
+    media_url is a durable ``/media/<name>`` path the frontend stores.
+    """
     suffix = Path(upload_file.filename or "audio").suffix or ".wav"
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    try:
-        temp_file.write(upload_file.file.read())
-    finally:
-        temp_file.close()
-    return temp_file.name
+    media_name = f"{uuid.uuid4().hex}{suffix}"
+    dest = MEDIA_DIR / media_name
+    with open(dest, "wb") as out:
+        out.write(upload_file.file.read())
+    return str(dest), f"/media/{media_name}"
 
 
 def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
@@ -250,61 +272,120 @@ async def transcribe(
     if not (file.content_type or "").startswith("audio/"):
         raise HTTPException(status_code=400, detail="Upload a valid audio file.")
 
-    temp_path = save_upload(file)
+    audio_path, audio_url = save_upload(file)
+    segments, info = model.transcribe(
+        audio_path,
+        beam_size=BEAM_SIZE,
+        language=LANGUAGE,
+        condition_on_previous_text=False,
+        word_timestamps=True,
+        vad_filter=USE_VAD,
+    )
+    raw_segments = list(segments)
+
+    transcript = " ".join(
+        getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
+    ).strip()
+
+    # Diarize + merge; fall back to single-speaker grouping if unavailable.
     try:
-        segments, info = model.transcribe(
-            temp_path,
-            beam_size=BEAM_SIZE,
-            language=LANGUAGE,
-            condition_on_previous_text=False,
-            word_timestamps=True,
-            vad_filter=USE_VAD,
+        turns = diarization.diarize(audio_path, num_speakers=num_speakers)
+    except diarization.DiarizationUnavailable as exc:
+        print(f"[diarization] unavailable: {exc}")
+        turns = []
+
+    if turns:
+        words = flatten_words(raw_segments)
+        speaker_segments = merge_words_with_speakers(words, turns)
+    else:
+        speaker_segments = build_default_speaker_segments(raw_segments)
+
+    # Collapse consecutive same-speaker turns into one consolidated block.
+    speaker_segments = consolidate_segments(speaker_segments)
+
+    # Summarize into an overview + key points (best-effort; never fatal).
+    summary_text: Optional[str] = None
+    key_points: List[str] = []
+    try:
+        result = summarization.summarize(transcript)
+        summary_text = result["summary"] or None
+        key_points = result["key_points"]
+    except summarization.SummaryUnavailable as exc:
+        print(f"[summarization] unavailable: {exc}")
+
+    return TranscriptionResponse(
+        transcript=transcript,
+        segments=[SpeakerSegment(**segment) for segment in speaker_segments],
+        language=getattr(info, "language", "unknown"),
+        duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") else None,
+        summary=summary_text,
+        key_points=key_points,
+        audio_url=audio_url,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recording persistence (PostgreSQL). These let the frontend save results and
+# reload them after a refresh instead of losing everything from memory.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/recordings")
+def list_recordings() -> List[Dict[str, Any]]:
+    """All saved recordings, newest first."""
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(db.Recording)
+            .order_by(db.Recording.created_at.desc())
+            .all()
         )
-        raw_segments = list(segments)
+        return [row.to_dict() for row in rows]
 
-        transcript = " ".join(
-            getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
-        ).strip()
 
-        # Diarize + merge; fall back to single-speaker grouping if unavailable.
+@app.get("/recordings/{recording_id}")
+def get_recording(recording_id: str) -> Dict[str, Any]:
+    with db.SessionLocal() as session:
+        row = session.get(db.Recording, recording_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Recording not found.")
+        return row.to_dict()
+
+
+@app.post("/recordings")
+def create_recording(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Insert (or replace) a recording. Idempotent on id so re-saves are safe."""
+    if not payload.get("id"):
+        raise HTTPException(status_code=400, detail="Recording 'id' is required.")
+    with db.SessionLocal() as session:
+        existing = session.get(db.Recording, str(payload["id"]))
+        if existing is not None:
+            session.delete(existing)
+            session.flush()
+        row = db.Recording.from_dict(payload)
+        session.add(row)
+        session.commit()
+        return row.to_dict()
+
+
+@app.delete("/recordings/{recording_id}")
+def delete_recording(recording_id: str) -> Dict[str, Any]:
+    with db.SessionLocal() as session:
+        row = session.get(db.Recording, recording_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Recording not found.")
+        audio_url = row.audio_url or ""
+        session.delete(row)
+        session.commit()
+
+    # Best-effort cleanup of the stored audio file.
+    if audio_url.startswith("/media/"):
+        media_file = MEDIA_DIR / Path(audio_url).name
         try:
-            turns = diarization.diarize(temp_path, num_speakers=num_speakers)
-        except diarization.DiarizationUnavailable as exc:
-            print(f"[diarization] unavailable: {exc}")
-            turns = []
+            media_file.unlink(missing_ok=True)
+        except OSError as exc:  # noqa: BLE001
+            print(f"[media] could not delete {media_file}: {exc}")
 
-        if turns:
-            words = flatten_words(raw_segments)
-            speaker_segments = merge_words_with_speakers(words, turns)
-        else:
-            speaker_segments = build_default_speaker_segments(raw_segments)
-
-        # Collapse consecutive same-speaker turns into one consolidated block.
-        speaker_segments = consolidate_segments(speaker_segments)
-
-        # Summarize into an overview + key points (best-effort; never fatal).
-        summary_text: Optional[str] = None
-        key_points: List[str] = []
-        try:
-            result = summarization.summarize(transcript)
-            summary_text = result["summary"] or None
-            key_points = result["key_points"]
-        except summarization.SummaryUnavailable as exc:
-            print(f"[summarization] unavailable: {exc}")
-
-        return TranscriptionResponse(
-            transcript=transcript,
-            segments=[SpeakerSegment(**segment) for segment in speaker_segments],
-            language=getattr(info, "language", "unknown"),
-            duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") else None,
-            summary=summary_text,
-            key_points=key_points,
-        )
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+    return {"status": "deleted", "id": recording_id}
 
 
 if __name__ == "__main__":
