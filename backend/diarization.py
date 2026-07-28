@@ -14,9 +14,13 @@ Requires:
 from __future__ import annotations
 
 import os
+import subprocess
 from typing import Dict, List, Optional
 
 MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
+
+# pyannote ingests 16 kHz mono audio. We decode to that ourselves (below).
+DIARIZE_SR = 16000
 
 # Lazily initialised so the (heavy) model only loads on first use, and a
 # missing token / package doesn't crash the whole API at import time.
@@ -46,7 +50,7 @@ def _load_pipeline() -> None:
         )
         return
 
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    token = os.environ.get("HF_TOKEN")
     if not token:
         _load_error = (
             "HF_TOKEN not set. Accept the terms at "
@@ -55,7 +59,12 @@ def _load_pipeline() -> None:
         return
 
     try:
-        pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=token)
+        # pyannote.audio >= 3.3 takes `token=`; older releases used
+        # `use_auth_token=`. Try the modern name first, fall back for old envs.
+        try:
+            pipeline = Pipeline.from_pretrained(MODEL_ID, token=token)
+        except TypeError:
+            pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=token)
     except Exception as exc:  # noqa: BLE001 - surface any load failure as text
         _load_error = f"Could not load '{MODEL_ID}': {exc}"
         return
@@ -80,8 +89,42 @@ def unavailable_reason() -> Optional[str]:
     return _load_error
 
 
-def diarize(audio_path: str) -> List[Dict[str, object]]:
+def _load_waveform(audio_path: str):
+    """Decode any audio file to an in-memory 16 kHz mono waveform via ffmpeg.
+
+    pyannote 4.x decodes audio through torchcodec, which fails on some
+    containers/codecs ("Invalid data found when processing input"). Decoding
+    ourselves with ffmpeg and handing pyannote a ``{"waveform", "sample_rate"}``
+    dict sidesteps torchcodec entirely and accepts anything ffmpeg can read.
+    """
+    import numpy as np
+    import torch
+
+    cmd = [
+        "ffmpeg", "-nostdin", "-threads", "1",
+        "-i", audio_path,
+        "-f", "f32le", "-acodec", "pcm_f32le",
+        "-ac", "1", "-ar", str(DIARIZE_SR),
+        "-",
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    audio = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    waveform = torch.from_numpy(audio).unsqueeze(0)  # shape: (1 channel, samples)
+    return {"waveform": waveform, "sample_rate": DIARIZE_SR}
+
+
+def diarize(
+    audio_path: str,
+    num_speakers: Optional[int] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+) -> List[Dict[str, object]]:
     """Return speaker turns as ``[{"start", "end", "speaker"}]`` sorted by start.
+
+    When the number of speakers is known (e.g. a 2-person interview), pass
+    ``num_speakers`` — pyannote otherwise estimates it and can over-split a
+    single voice into many phantom speakers. ``min_speakers`` / ``max_speakers``
+    bound the estimate when the exact count isn't known.
 
     Raises DiarizationUnavailable if the pipeline can't be loaded/run.
     """
@@ -89,10 +132,34 @@ def diarize(audio_path: str) -> List[Dict[str, object]]:
     if _pipeline is None:
         raise DiarizationUnavailable(_load_error or "Diarization pipeline unavailable.")
 
+    params: Dict[str, int] = {}
+    if num_speakers and num_speakers > 0:
+        params["num_speakers"] = int(num_speakers)
+    else:
+        if min_speakers and min_speakers > 0:
+            params["min_speakers"] = int(min_speakers)
+        if max_speakers and max_speakers > 0:
+            params["max_speakers"] = int(max_speakers)
+
+    # Prefer decoding via ffmpeg (robust); fall back to letting pyannote read
+    # the path directly if ffmpeg isn't available.
     try:
-        annotation = _pipeline(audio_path)
+        audio_input: object = _load_waveform(audio_path)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        print(f"[diarization] ffmpeg decode failed, using path directly: {exc}")
+        audio_input = audio_path
+
+    try:
+        output = _pipeline(audio_input, **params)
     except Exception as exc:  # noqa: BLE001
         raise DiarizationUnavailable(f"Diarization failed: {exc}") from exc
+
+    # pyannote 4.x returns a DiarizeOutput wrapper; 3.x returned the Annotation
+    # directly. Prefer the non-overlapping ("exclusive") track for clean
+    # word-to-speaker alignment.
+    annotation = getattr(output, "exclusive_speaker_diarization", None)
+    if annotation is None:
+        annotation = getattr(output, "speaker_diarization", output)
 
     turns: List[Dict[str, object]] = []
     for segment, _, speaker in annotation.itertracks(yield_label=True):

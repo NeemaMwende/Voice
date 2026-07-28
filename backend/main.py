@@ -11,12 +11,22 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from dotenv import load_dotenv
+
+load_dotenv()  # read backend/.env (HF_TOKEN, OLLAMA_URL, OLLAMA_MODEL, …)
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
 import diarization
+import summarization
+
+# When one speaker holds the floor, keep their words in a single block instead
+# of one bubble per Whisper segment. A pause longer than this (seconds) inside
+# that block becomes a paragraph break so long turns stay readable.
+PARAGRAPH_GAP_SEC = float(os.environ.get("PARAGRAPH_GAP_SEC", "2.0"))
 
 app = FastAPI(title="EchoNotes Transcription Backend")
 app.add_middleware(
@@ -32,7 +42,25 @@ COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE", "int8")
 # Force a language (e.g. "en") or leave unset for auto-detection.
 LANGUAGE = os.environ.get("WHISPER_LANGUAGE") or None
 
-model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
+# Whisper tuning. Diarization dominates runtime, so Whisper is tuned for
+# completeness/accuracy — its cost is negligible next to pyannote.
+#  * WHISPER_BEAM=5 (beam search) for accuracy; set 1 for greedy/faster.
+#  * WHISPER_VAD is OFF by default: the voice-activity filter drops anything it
+#    judges non-speech, which silently truncates transcripts (badly on music and
+#    quiet speech) and strips filler words. We want the FULL raw transcript, so
+#    only enable it (WHISPER_VAD=1) for clean single-speaker speech where speed
+#    matters more than capturing every word.
+#  * WHISPER_THREADS=0 lets faster-whisper pick; set e.g. 8 to cap CPU use.
+BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
+USE_VAD = os.environ.get("WHISPER_VAD", "0") in ("1", "true", "True")
+CPU_THREADS = int(os.environ.get("WHISPER_THREADS", "0"))
+
+model = WhisperModel(
+    MODEL_NAME,
+    device=DEVICE,
+    compute_type=COMPUTE_TYPE,
+    cpu_threads=CPU_THREADS,
+)
 
 
 class SpeakerSegment(BaseModel):
@@ -47,6 +75,8 @@ class TranscriptionResponse(BaseModel):
     segments: List[SpeakerSegment]
     language: str
     duration: Optional[float] = None
+    summary: Optional[str] = None
+    key_points: List[str] = []
 
 
 def save_upload(upload_file: UploadFile) -> str:
@@ -142,29 +172,62 @@ def merge_words_with_speakers(
     return [seg for seg in segments if seg["text"]]
 
 
-def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, Any]]:
-    """Fallback grouping (single/gap-based) when diarization is unavailable."""
-    result: List[Dict[str, Any]] = []
-    current_speaker = 1
-    previous_end = 0.0
+def consolidate_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge consecutive same-speaker segments into one block.
 
+    A speaker who holds the floor for a while should read as a single turn, not
+    a stack of one-line bubbles. Consecutive segments from the same speaker are
+    joined together; a longer pause between them becomes a paragraph break so a
+    long turn stays readable. A new block only starts when a *different* speaker
+    takes over.
+    """
+    consolidated: List[Dict[str, Any]] = []
+    for segment in segments:
+        text = (segment.get("text") or "").strip()
+        if not text:
+            continue
+
+        prev = consolidated[-1] if consolidated else None
+        if prev is not None and prev["speaker"] == segment["speaker"]:
+            gap = float(segment["start"]) - float(prev["end"])
+            joiner = "\n\n" if gap > PARAGRAPH_GAP_SEC else " "
+            prev["text"] = f"{prev['text']}{joiner}{text}"
+            prev["end"] = float(segment["end"])
+        else:
+            consolidated.append(
+                {
+                    "speaker": segment["speaker"],
+                    "start": float(segment["start"]),
+                    "end": float(segment["end"]),
+                    "text": text,
+                }
+            )
+    return consolidated
+
+
+def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, Any]]:
+    """Fallback used when diarization is unavailable.
+
+    Without diarization we genuinely cannot tell voices apart from the audio, so
+    inventing a new ``Speaker N`` on every pause is wrong — it turns one person
+    into dozens of phantom speakers. Instead attribute everything to a single
+    speaker; ``consolidate_segments`` then stitches it into readable paragraphs.
+    """
+    result: List[Dict[str, Any]] = []
     for segment in raw_segments:
         text = getattr(segment, "text", "").strip()
         if not text:
             continue
         start = float(getattr(segment, "start", 0.0))
         end = float(getattr(segment, "end", start))
-        if start - previous_end > 3.0 and len(result) > 0:
-            current_speaker += 1
         result.append(
             {
-                "speaker": f"Speaker {current_speaker}",
+                "speaker": "Speaker 1",
                 "start": start,
                 "end": end,
                 "text": text,
             }
         )
-        previous_end = end
     return result
 
 
@@ -180,7 +243,10 @@ def health():
 
 
 @app.post("/transcribe", response_model=TranscriptionResponse)
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(
+    file: UploadFile = File(...),
+    num_speakers: Optional[int] = Form(None),
+):
     if not (file.content_type or "").startswith("audio/"):
         raise HTTPException(status_code=400, detail="Upload a valid audio file.")
 
@@ -188,10 +254,11 @@ async def transcribe(file: UploadFile = File(...)):
     try:
         segments, info = model.transcribe(
             temp_path,
-            beam_size=5,
+            beam_size=BEAM_SIZE,
             language=LANGUAGE,
             condition_on_previous_text=False,
             word_timestamps=True,
+            vad_filter=USE_VAD,
         )
         raw_segments = list(segments)
 
@@ -199,9 +266,9 @@ async def transcribe(file: UploadFile = File(...)):
             getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
         ).strip()
 
-        # Diarize + merge; fall back to gap-based grouping if pyannote is unavailable.
+        # Diarize + merge; fall back to single-speaker grouping if unavailable.
         try:
-            turns = diarization.diarize(temp_path)
+            turns = diarization.diarize(temp_path, num_speakers=num_speakers)
         except diarization.DiarizationUnavailable as exc:
             print(f"[diarization] unavailable: {exc}")
             turns = []
@@ -212,11 +279,26 @@ async def transcribe(file: UploadFile = File(...)):
         else:
             speaker_segments = build_default_speaker_segments(raw_segments)
 
+        # Collapse consecutive same-speaker turns into one consolidated block.
+        speaker_segments = consolidate_segments(speaker_segments)
+
+        # Summarize into an overview + key points (best-effort; never fatal).
+        summary_text: Optional[str] = None
+        key_points: List[str] = []
+        try:
+            result = summarization.summarize(transcript)
+            summary_text = result["summary"] or None
+            key_points = result["key_points"]
+        except summarization.SummaryUnavailable as exc:
+            print(f"[summarization] unavailable: {exc}")
+
         return TranscriptionResponse(
             transcript=transcript,
             segments=[SpeakerSegment(**segment) for segment in speaker_segments],
             language=getattr(info, "language", "unknown"),
             duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") else None,
+            summary=summary_text,
+            key_points=key_points,
         )
     finally:
         try:
