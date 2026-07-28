@@ -24,6 +24,8 @@ type TranscriptionResponse = {
   segments: TranscriptionSegment[];
   language: string;
   duration: number | null;
+  summary?: string | null;
+  key_points?: string[];
 };
 
 const WAVE_BARS = Array.from({ length: 44 });
@@ -62,10 +64,20 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     clean: s.text.trim(),
   }));
 
-  const highlights = response.segments
-    .map((segment) => segment.text.trim())
-    .filter(Boolean)
-    .slice(0, 5);
+  // AI-generated key points (Ollama). Fall back to metadata if unavailable.
+  const keyPoints = response.key_points?.filter(Boolean) ?? [];
+  const overview =
+    response.summary?.trim() ||
+    response.transcript ||
+    "No speech was detected in this recording.";
+
+  const metaFacts = [
+    `Language: ${response.language || "unknown"}`,
+    `Duration: ${formatTimestamp(response.duration ?? 0)}`,
+    `${speakers.length} speaker${speakers.length === 1 ? "" : "s"} · ${
+      response.segments.length
+    } turn${response.segments.length === 1 ? "" : "s"}`,
+  ];
 
   return {
     id: crypto.randomUUID(),
@@ -74,21 +86,12 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     speakers,
     segments,
     summary: [
-      {
-        heading: "Overview",
-        body: response.transcript || "No speech was detected in this recording.",
-      },
-      ...(highlights.length
-        ? [{ heading: "Transcript highlights", bullets: highlights }]
+      { heading: "Overview", body: overview },
+      ...(keyPoints.length
+        ? [{ heading: "Key points", bullets: keyPoints }]
         : []),
     ],
-    key: [
-      `Language: ${response.language || "unknown"}`,
-      `Duration: ${formatTimestamp(response.duration ?? 0)}`,
-      `${response.segments.length} transcript segment${
-        response.segments.length === 1 ? "" : "s"
-      }`,
-    ],
+    key: keyPoints.length ? keyPoints : metaFacts,
     tags: ["Transcription", response.language || "Unknown language"],
     durationSec: Math.round(response.duration ?? src.durationSec ?? 0),
     fileName: src.name,
@@ -107,6 +110,7 @@ export default function UploadPage() {
   const [pct, setPct] = useState(0);
   const [file, setFile] = useState<Source | null>(null);
   const [result, setResult] = useState<Recording | null>(null);
+  const [speakerCount, setSpeakerCount] = useState<string>("");
   const busy = stage !== "idle" && stage !== "done";
 
   // shared pipeline for both upload + live recording
@@ -121,6 +125,10 @@ export default function UploadPage() {
       const blob = await fetch(src.url).then((r) => r.blob());
       const form = new FormData();
       form.append("file", blob, src.name);
+      // Tell diarization the exact speaker count when the user knows it — stops
+      // pyannote from over-splitting one voice into many phantom speakers.
+      const n = parseInt(speakerCount, 10);
+      if (Number.isFinite(n) && n > 0) form.append("num_speakers", String(n));
 
       setStage("transcribing");
       setPct(45);
@@ -248,6 +256,27 @@ export default function UploadPage() {
               onComplete={(src) => void process(src)}
             />
           )}
+
+          {/* expected speakers — optional hint for diarization */}
+          <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl bg-white/[0.03] px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-[13px] font-semibold">Expected speakers</div>
+              <div className="text-[11px] text-muted">
+                Know how many people are talking? Set it so voices don&apos;t get over-split.
+              </div>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              inputMode="numeric"
+              placeholder="Auto"
+              value={speakerCount}
+              disabled={busy}
+              onChange={(e) => setSpeakerCount(e.target.value)}
+              className="w-20 shrink-0 rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-center text-sm font-semibold text-white outline-none transition-colors focus:border-neon2 disabled:opacity-50"
+            />
+          </div>
 
           {/* waveform */}
           <div className={`flex items-center justify-center gap-1 overflow-hidden transition-all ${stage === "transcribing" ? "h-[54px] mt-5" : "h-0"}`}>

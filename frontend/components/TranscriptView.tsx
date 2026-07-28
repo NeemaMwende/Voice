@@ -92,7 +92,7 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
                   <span className="font-mono text-[10.5px] text-muted">{fmtStamp(seg.tSec)}</span>
                 </div>
                 <div
-                  className="rounded-2xl rounded-tl-md border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 text-[13.5px] leading-relaxed text-[#dfe2fb]"
+                  className="whitespace-pre-wrap rounded-2xl rounded-tl-md border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 text-[13.5px] leading-relaxed text-[#dfe2fb]"
                 >
                   {mode === "clean" ? seg.clean : <Verbatim raw={seg.raw} clean={seg.clean} />}
                 </div>
