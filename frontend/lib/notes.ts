@@ -17,14 +17,28 @@ export type Segment = {
   clean: string;
 };
 
-/** Shape of a transcription result, independent of the id/file metadata. */
+/**
+ * Shape of a transcription result, independent of the id/file metadata.
+ *
+ * The note sections (`summary` … `outline`) are what the Notes tab renders —
+ * the raw transcript lives only in `transcript`/`segments` and is shown on the
+ * Transcript tab. Everything after `key` is optional so recordings saved before
+ * those sections existed still load.
+ */
 export type NoteContent = {
   title: string;
   transcript: string;
   speakers: Speaker[];
   segments: Segment[];
+  /** overview — the "what was this about" paragraph(s) */
   summary: NoteSection[];
+  /** key points */
   key: string[];
+  actionItems?: string[];
+  /** themed groups: decisions, risks, numbers, … */
+  insights?: NoteSection[];
+  /** chronological topic-by-topic breakdown of the conversation */
+  outline?: NoteSection[];
   tags: string[];
   durationSec: number;
 };

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 
-from sqlalchemy import BigInteger, Integer, Text, create_engine
+from sqlalchemy import BigInteger, Integer, Text, create_engine, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -56,6 +56,9 @@ class Recording(Base):
     segments: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     summary: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     key_points: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    action_items: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    insights: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    outline: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     tags: Mapped[List[Any]] = mapped_column(JSONB, default=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -73,6 +76,9 @@ class Recording(Base):
             "segments": self.segments or [],
             "summary": self.summary or [],
             "key": self.key_points or [],
+            "actionItems": self.action_items or [],
+            "insights": self.insights or [],
+            "outline": self.outline or [],
             "tags": self.tags or [],
         }
 
@@ -92,10 +98,26 @@ class Recording(Base):
             segments=data.get("segments") or [],
             summary=data.get("summary") or [],
             key_points=data.get("key") or [],
+            action_items=data.get("actionItems") or [],
+            insights=data.get("insights") or [],
+            outline=data.get("outline") or [],
             tags=data.get("tags") or [],
         )
 
 
+# Columns added after the table first shipped. ``create_all`` only creates
+# missing *tables*, so existing installs need these filled in explicitly.
+_ADDED_COLUMNS = ("action_items", "insights", "outline")
+
+
 def init_db() -> None:
-    """Create the recordings table if it doesn't already exist."""
+    """Create the recordings table if it doesn't already exist, then migrate."""
     Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for column in _ADDED_COLUMNS:
+            conn.execute(
+                text(
+                    f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS "
+                    f"{column} JSONB NOT NULL DEFAULT '[]'::jsonb"
+                )
+            )

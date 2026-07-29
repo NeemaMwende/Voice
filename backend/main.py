@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
 import diarization
+import progress
 import summarization
 import db
 
@@ -87,6 +88,11 @@ class SpeakerSegment(BaseModel):
     text: str
 
 
+class NoteSection(BaseModel):
+    heading: str
+    bullets: List[str] = []
+
+
 class TranscriptionResponse(BaseModel):
     transcript: str
     segments: List[SpeakerSegment]
@@ -94,6 +100,9 @@ class TranscriptionResponse(BaseModel):
     duration: Optional[float] = None
     summary: Optional[str] = None
     key_points: List[str] = []
+    action_items: List[str] = []
+    insights: List[NoteSection] = []
+    outline: List[NoteSection] = []
     audio_url: Optional[str] = None
 
 
@@ -253,6 +262,38 @@ def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, An
     return result
 
 
+def labeled_transcript(segments: List[Dict[str, Any]]) -> str:
+    """``Speaker 1: …`` transcript — what the summarizer and namer both read."""
+    return "\n\n".join(f"{seg['speaker']}: {seg['text']}" for seg in segments)
+
+
+def apply_speaker_names(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rename ``Speaker N`` labels to real names when the talk reveals them.
+
+    People introduce themselves and address each other by name, so a diarized
+    transcript usually carries enough to label the voices properly. Anyone whose
+    name is never said keeps their ``Speaker N`` fallback.
+    """
+    labels: List[str] = []
+    for seg in segments:
+        if seg["speaker"] not in labels:
+            labels.append(seg["speaker"])
+    if not labels:
+        return segments
+
+    try:
+        names = summarization.identify_speakers(labeled_transcript(segments), labels)
+    except Exception as exc:  # noqa: BLE001 - naming is a nicety, never fatal
+        print(f"[speakers] name detection failed: {exc}")
+        return segments
+
+    if names:
+        print(f"[speakers] resolved {names}")
+    for seg in segments:
+        seg["speaker"] = names.get(seg["speaker"], seg["speaker"])
+    return segments
+
+
 @app.get("/health")
 def health():
     return {
@@ -264,15 +305,38 @@ def health():
     }
 
 
+@app.get("/progress/{job_id}")
+def transcription_progress(job_id: str) -> Dict[str, Any]:
+    """Live progress for an in-flight /transcribe call. See progress.py."""
+    return progress.get(job_id)
+
+
+# Defined with `def` (not `async def`) on purpose: the work below is blocking
+# CPU work, so FastAPI runs it in a worker thread and the /progress endpoint
+# stays responsive while a transcription is underway.
 @app.post("/transcribe", response_model=TranscriptionResponse)
-async def transcribe(
+def transcribe(
     file: UploadFile = File(...),
     num_speakers: Optional[int] = Form(None),
+    job_id: Optional[str] = Form(None),
 ):
     if not (file.content_type or "").startswith("audio/"):
         raise HTTPException(status_code=400, detail="Upload a valid audio file.")
 
+    progress.start(job_id)
+    try:
+        return _run_transcription(file, num_speakers, job_id)
+    except Exception:
+        progress.finish(job_id, failed=True)
+        raise
+
+
+def _run_transcription(
+    file: UploadFile, num_speakers: Optional[int], job_id: Optional[str]
+) -> TranscriptionResponse:
     audio_path, audio_url = save_upload(file)
+    progress.update(job_id, 12, "uploading", "Saving audio")
+
     segments, info = model.transcribe(
         audio_path,
         beam_size=BEAM_SIZE,
@@ -281,13 +345,23 @@ async def transcribe(
         word_timestamps=True,
         vad_filter=USE_VAD,
     )
-    raw_segments = list(segments)
+
+    # faster-whisper streams segments lazily, so draining the generator here
+    # gives us genuine transcription progress: how far into the audio we are.
+    total_sec = float(getattr(info, "duration", 0.0) or 0.0)
+    raw_segments = []
+    for segment in segments:
+        raw_segments.append(segment)
+        if total_sec > 0:
+            done = min(1.0, float(getattr(segment, "end", 0.0) or 0.0) / total_sec)
+            progress.update(job_id, 15 + 45 * done, "transcribing", "Transcribing audio")
 
     transcript = " ".join(
         getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
     ).strip()
 
     # Diarize + merge; fall back to single-speaker grouping if unavailable.
+    progress.update(job_id, 62, "diarizing", "Separating speakers")
     try:
         turns = diarization.diarize(audio_path, num_speakers=num_speakers)
     except diarization.DiarizationUnavailable as exc:
@@ -303,16 +377,34 @@ async def transcribe(
     # Collapse consecutive same-speaker turns into one consolidated block.
     speaker_segments = consolidate_segments(speaker_segments)
 
-    # Summarize into an overview + key points (best-effort; never fatal).
+    # Swap Speaker 1/2 for real names wherever the conversation reveals them.
+    progress.update(job_id, 76, "naming", "Identifying speakers")
+    speaker_segments = apply_speaker_names(speaker_segments)
+
+    # Summarize into the full note set (best-effort; never fatal). The
+    # speaker-labelled transcript goes in so the notes can attribute by name.
+    progress.update(job_id, 80, "analyzing", "Writing notes")
     summary_text: Optional[str] = None
     key_points: List[str] = []
+    action_items: List[str] = []
+    insights: List[Dict[str, Any]] = []
+    outline: List[Dict[str, Any]] = []
     try:
-        result = summarization.summarize(transcript)
+        result = summarization.summarize(
+            labeled_transcript(speaker_segments) or transcript,
+            on_progress=lambda frac, label: progress.update(
+                job_id, 80 + 18 * frac, "analyzing", label
+            ),
+        )
         summary_text = result["summary"] or None
         key_points = result["key_points"]
+        action_items = result["action_items"]
+        insights = result["insights"]
+        outline = result["outline"]
     except summarization.SummaryUnavailable as exc:
         print(f"[summarization] unavailable: {exc}")
 
+    progress.finish(job_id)
     return TranscriptionResponse(
         transcript=transcript,
         segments=[SpeakerSegment(**segment) for segment in speaker_segments],
@@ -320,6 +412,9 @@ async def transcribe(
         duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") else None,
         summary=summary_text,
         key_points=key_points,
+        action_items=action_items,
+        insights=[NoteSection(**section) for section in insights],
+        outline=[NoteSection(**section) for section in outline],
         audio_url=audio_url,
     )
 

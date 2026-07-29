@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
 import { fmtDuration } from "@/lib/notes";
@@ -11,19 +11,25 @@ import { IconNotes, IconUpload } from "@/components/icons";
 export default function NotesPage() {
   const { recordings, loading } = useApp();
   const [selected, setSelected] = useState<string | null>(null);
+  const deepLinked = useRef(false);
 
   // Open a specific recording's notes when linked as /notes?id=<id>.
   useEffect(() => {
+    if (deepLinked.current) return;
+    deepLinked.current = true;
     const id = new URLSearchParams(window.location.search).get("id");
     if (id) setSelected(id);
   }, []);
 
+  // Fall back to the newest recording when nothing valid is selected. The
+  // functional update matters: on a deep link both effects run in the same
+  // commit, and this must see the id the effect above just queued.
   useEffect(() => {
-    if (!selected && recordings.length) setSelected(recordings[0].id);
-    if (selected && !recordings.find((r) => r.id === selected)) {
-      setSelected(recordings[0]?.id ?? null);
-    }
-  }, [recordings, selected]);
+    if (!recordings.length) return;
+    setSelected((cur) =>
+      cur && recordings.some((r) => r.id === cur) ? cur : recordings[0].id
+    );
+  }, [recordings]);
 
   const active = recordings.find((r) => r.id === selected) ?? null;
 
