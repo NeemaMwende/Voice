@@ -21,9 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
+import cleaning
 import diarization
 import progress
 import summarization
+import vad
 import db
 
 # When one speaker holds the floor, keep their words in a single block instead
@@ -73,6 +75,20 @@ BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
 USE_VAD = os.environ.get("WHISPER_VAD", "0") in ("1", "true", "True")
 CPU_THREADS = int(os.environ.get("WHISPER_THREADS", "0"))
 
+# Left alone, Whisper "tidies up" as it transcribes: it silently drops "uhh",
+# "hmm" and stutters because its training transcripts were written that way.
+# The Transcript tab wants the opposite — a genuinely verbatim record it can
+# diff against the cleaned version — and priming it with a disfluent sample
+# is what makes it write the fillers down. Set WHISPER_VERBATIM=0 to disable.
+VERBATIM = os.environ.get("WHISPER_VERBATIM", "1") in ("1", "true", "True")
+VERBATIM_PROMPT = os.environ.get(
+    "WHISPER_VERBATIM_PROMPT",
+    "Umm, so, like, I was, uh, thinking — you know — that we, we should, "
+    "hmm, probably just, er, write down every single word exactly as it's "
+    "said, uhh, including all the filler words and false starts.",
+)
+INITIAL_PROMPT = VERBATIM_PROMPT if VERBATIM else None
+
 model = WhisperModel(
     MODEL_NAME,
     device=DEVICE,
@@ -85,7 +101,10 @@ class SpeakerSegment(BaseModel):
     speaker: str
     start: float
     end: float
+    # Verbatim, exactly as spoken — fillers, stutters and noise tags included.
     text: str
+    # Same turn with the noise stripped. Empty when the turn was pure filler.
+    clean: str = ""
 
 
 class NoteSection(BaseModel):
@@ -120,8 +139,17 @@ def save_upload(upload_file: UploadFile) -> tuple[str, str]:
     return str(dest), f"/media/{media_name}"
 
 
-def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
-    """Collect word-level timings; fall back to segment-level if unavailable."""
+def identity_time(seconds: float, *, is_end: bool = False) -> float:
+    """No-op timeline mapping, used when the VAD pre-pass didn't run."""
+    return float(seconds)
+
+
+def flatten_words(raw_segments: List[Any], to_original=identity_time) -> List[Dict[str, Any]]:
+    """Collect word-level timings; fall back to segment-level if unavailable.
+
+    ``to_original`` converts Whisper's timestamps — which are relative to the
+    silence-stripped audio it was given — back onto the real recording.
+    """
     words: List[Dict[str, Any]] = []
     for segment in raw_segments:
         seg_words = getattr(segment, "words", None)
@@ -132,8 +160,10 @@ def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
                     continue
                 words.append(
                     {
-                        "start": float(getattr(word, "start", 0.0) or 0.0),
-                        "end": float(getattr(word, "end", 0.0) or 0.0),
+                        "start": to_original(float(getattr(word, "start", 0.0) or 0.0)),
+                        "end": to_original(
+                            float(getattr(word, "end", 0.0) or 0.0), is_end=True
+                        ),
                         "text": text,
                     }
                 )
@@ -142,8 +172,10 @@ def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
             if text:
                 words.append(
                     {
-                        "start": float(getattr(segment, "start", 0.0) or 0.0),
-                        "end": float(getattr(segment, "end", 0.0) or 0.0),
+                        "start": to_original(float(getattr(segment, "start", 0.0) or 0.0)),
+                        "end": to_original(
+                            float(getattr(segment, "end", 0.0) or 0.0), is_end=True
+                        ),
                         "text": text,
                     }
                 )
@@ -236,7 +268,9 @@ def consolidate_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return consolidated
 
 
-def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, Any]]:
+def build_default_speaker_segments(
+    raw_segments: List[Any], to_original=identity_time
+) -> List[Dict[str, Any]]:
     """Fallback used when diarization is unavailable.
 
     Without diarization we genuinely cannot tell voices apart from the audio, so
@@ -254,17 +288,35 @@ def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, An
         result.append(
             {
                 "speaker": "Speaker 1",
-                "start": start,
-                "end": end,
+                "start": to_original(start),
+                "end": to_original(end, is_end=True),
                 "text": text,
             }
         )
     return result
 
 
+def add_clean_text(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Attach the de-noised version of each turn alongside the verbatim one."""
+    for seg in segments:
+        seg["clean"] = cleaning.clean_text(seg["text"])
+    return segments
+
+
 def labeled_transcript(segments: List[Dict[str, Any]]) -> str:
-    """``Speaker 1: …`` transcript — what the summarizer and namer both read."""
-    return "\n\n".join(f"{seg['speaker']}: {seg['text']}" for seg in segments)
+    """``Speaker 1: …`` transcript — what the summarizer and namer both read.
+
+    Uses the cleaned turns: fillers are pure noise to a summarizer, and a turn
+    that cleaned down to nothing has nothing to summarize.
+    """
+    lines = []
+    for seg in segments:
+        # "clean" missing means cleaning never ran; "clean" empty means the turn
+        # really was pure filler, which the summarizer should not see at all.
+        text = seg["clean"] if "clean" in seg else seg["text"]
+        if text.strip():
+            lines.append(f"{seg['speaker']}: {text}")
+    return "\n\n".join(lines)
 
 
 def apply_speaker_names(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -302,6 +354,8 @@ def health():
         "device": DEVICE,
         "diarization_available": diarization.is_available(),
         "diarization_note": diarization.unavailable_reason(),
+        "silero_vad": vad.ENABLED,
+        "verbatim_prompt": VERBATIM,
     }
 
 
@@ -335,19 +389,43 @@ def _run_transcription(
     file: UploadFile, num_speakers: Optional[int], job_id: Optional[str]
 ) -> TranscriptionResponse:
     audio_path, audio_url = save_upload(file)
-    progress.update(job_id, 12, "uploading", "Saving audio")
+    progress.update(job_id, 8, "uploading", "Saving audio")
+
+    # Silero VAD pre-pass: decode once, then cut the silence out so Whisper and
+    # pyannote only ever process speech. Both stages cost time proportional to
+    # the audio they're handed, so this is where the runtime saving comes from.
+    # `speech` is None when the pre-pass is off or found nothing — in that case
+    # everything below falls back to the full audio, unchanged.
+    full_audio = vad.decode(audio_path)
+    original_duration = len(full_audio) / vad.SAMPLE_RATE
+    progress.update(job_id, 12, "uploading", "Detecting speech")
+    speech = vad.trim_silence(full_audio)
+
+    if speech is not None:
+        print(
+            f"[vad] kept {speech.speech_duration:.1f}s of {speech.original_duration:.1f}s "
+            f"({speech.kept_ratio:.0%}) across {len(speech.chunks)} chunks; "
+            f"skipped {speech.removed_duration:.1f}s of silence"
+        )
+    whisper_audio = speech.audio if speech is not None else full_audio
+    to_original = speech.to_original if speech is not None else identity_time
 
     segments, info = model.transcribe(
-        audio_path,
+        whisper_audio,
         beam_size=BEAM_SIZE,
         language=LANGUAGE,
         condition_on_previous_text=False,
         word_timestamps=True,
-        vad_filter=USE_VAD,
+        # Silero already removed the silence; re-running Whisper's own VAD over
+        # the trimmed audio would only risk trimming speech twice.
+        vad_filter=USE_VAD and speech is None,
+        initial_prompt=INITIAL_PROMPT,
     )
 
     # faster-whisper streams segments lazily, so draining the generator here
     # gives us genuine transcription progress: how far into the audio we are.
+    # This denominator is the *trimmed* length, which is the timeline Whisper's
+    # own timestamps use.
     total_sec = float(getattr(info, "duration", 0.0) or 0.0)
     raw_segments = []
     for segment in segments:
@@ -361,21 +439,33 @@ def _run_transcription(
     ).strip()
 
     # Diarize + merge; fall back to single-speaker grouping if unavailable.
+    # pyannote gets the same silence-stripped waveform Whisper did, so its turns
+    # come back on the trimmed timeline and need the same mapping.
     progress.update(job_id, 62, "diarizing", "Separating speakers")
     try:
-        turns = diarization.diarize(audio_path, num_speakers=num_speakers)
+        turns = diarization.diarize(
+            audio_path,
+            num_speakers=num_speakers,
+            waveform=speech.audio if speech is not None else None,
+        )
     except diarization.DiarizationUnavailable as exc:
         print(f"[diarization] unavailable: {exc}")
         turns = []
 
+    for turn in turns:
+        turn["start"] = to_original(float(turn["start"]))
+        turn["end"] = to_original(float(turn["end"]), is_end=True)
+
     if turns:
-        words = flatten_words(raw_segments)
+        words = flatten_words(raw_segments, to_original)
         speaker_segments = merge_words_with_speakers(words, turns)
     else:
-        speaker_segments = build_default_speaker_segments(raw_segments)
+        speaker_segments = build_default_speaker_segments(raw_segments, to_original)
 
-    # Collapse consecutive same-speaker turns into one consolidated block.
+    # Collapse consecutive same-speaker turns into one consolidated block, then
+    # attach each turn's de-noised twin for the Transcript tab's side-by-side.
     speaker_segments = consolidate_segments(speaker_segments)
+    speaker_segments = add_clean_text(speaker_segments)
 
     # Swap Speaker 1/2 for real names wherever the conversation reveals them.
     progress.update(job_id, 76, "naming", "Identifying speakers")
@@ -409,7 +499,9 @@ def _run_transcription(
         transcript=transcript,
         segments=[SpeakerSegment(**segment) for segment in speaker_segments],
         language=getattr(info, "language", "unknown"),
-        duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") else None,
+        # The real recording's length, not the trimmed one Whisper saw — this
+        # drives playback length and the "minutes transcribed" stat.
+        duration=original_duration,
         summary=summary_text,
         key_points=key_points,
         action_items=action_items,

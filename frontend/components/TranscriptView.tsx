@@ -1,14 +1,26 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { ReactNode, useMemo, useState } from "react";
 import { Recording } from "@/context/AppContext";
 import { diffRaw, fmtStamp, initials, Speaker } from "@/lib/notes";
 import { IconSparkle, IconUsers } from "./icons";
 
-type Mode = "clean" | "verbatim";
+/**
+ * "compare" shows both versions of every turn side by side — the verbatim
+ * record with its noise struck through, and the cleaned text beside it — so
+ * you can see exactly what was removed. The single-column modes are for
+ * reading one version end to end.
+ */
+type Mode = "compare" | "clean" | "verbatim";
+
+const MODES: { id: Mode; label: string }[] = [
+  { id: "compare", label: "Compare" },
+  { id: "clean", label: "Cleaned" },
+  { id: "verbatim", label: "Verbatim" },
+];
 
 export default function TranscriptView({ rec }: { rec: Recording }) {
-  const [mode, setMode] = useState<Mode>("clean");
+  const [mode, setMode] = useState<Mode>("compare");
 
   const speakerMap = useMemo(() => {
     const m: Record<string, Speaker> = {};
@@ -32,39 +44,43 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
 
   return (
     <div>
-      {/* toolbar: speaker count + mode toggle */}
+      {/* toolbar: speaker count + mode switch */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-1.5 text-[11.5px] text-muted">
           <IconUsers className="h-4 w-4" />
           {rec.speakers.length} {rec.speakers.length === 1 ? "speaker" : "speakers"}
           <span className="mx-1.5 opacity-40">·</span>
-          {mode === "verbatim" ? (
-            <span className="text-neon3">{removedCount} noise words highlighted</span>
-          ) : (
-            <span className="text-ok">{removedCount} noise words removed</span>
-          )}
+          <span className={mode === "clean" ? "text-ok" : "text-neon3"}>
+            {removedCount} noise {removedCount === 1 ? "word" : "words"}{" "}
+            {mode === "clean" ? "removed" : "highlighted"}
+          </span>
         </div>
 
         <div className="flex rounded-full bg-white/[0.05] p-1 text-[11px] font-semibold">
-          {(["clean", "verbatim"] as const).map((m) => (
+          {MODES.map((m) => (
             <button
-              key={m}
-              onClick={() => setMode(m)}
+              key={m.id}
+              onClick={() => setMode(m.id)}
               className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition-all ${
-                mode === m ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_4px_14px_-4px_#7c5cff]" : "text-muted hover:text-white"
+                mode === m.id
+                  ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_4px_14px_-4px_#7c5cff]"
+                  : "text-muted hover:text-white"
               }`}
             >
-              {m === "clean" ? (
-                <>
-                  <IconSparkle className="h-3.5 w-3.5" /> Cleaned
-                </>
-              ) : (
-                "Verbatim"
-              )}
+              {m.id === "clean" && <IconSparkle className="h-3.5 w-3.5" />}
+              {m.label}
             </button>
           ))}
         </div>
       </div>
+
+      {/* column headings, compare mode only */}
+      {mode === "compare" && (
+        <div className="mb-2 hidden gap-3 pl-12 md:grid md:grid-cols-2">
+          <ColumnHead tint="text-neon3" label="Verbatim" note="everything, as spoken" />
+          <ColumnHead tint="text-ok" label="Cleaned" note="fillers & noise removed" />
+        </div>
+      )}
 
       {/* speaker turns */}
       <div className="space-y-4">
@@ -83,7 +99,7 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
                 {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-white/10" />}
               </div>
 
-              {/* bubble */}
+              {/* bubble(s) */}
               <div className="min-w-0 flex-1 pb-1">
                 <div className="mb-1 flex items-baseline gap-2">
                   <span className="text-[13px] font-semibold" style={{ color: sp.color }}>
@@ -91,23 +107,85 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
                   </span>
                   <span className="font-mono text-[10.5px] text-muted">{fmtStamp(seg.tSec)}</span>
                 </div>
-                <div
-                  className="whitespace-pre-wrap rounded-2xl rounded-tl-md border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 text-[13.5px] leading-relaxed text-[#dfe2fb]"
-                >
-                  {mode === "clean" ? seg.clean : <Verbatim raw={seg.raw} clean={seg.clean} />}
-                </div>
+
+                {mode === "compare" ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Bubble accent="verbatim" caption="Verbatim">
+                      <Verbatim raw={seg.raw} clean={seg.clean} />
+                    </Bubble>
+                    <Bubble accent="clean" caption="Cleaned">
+                      {seg.clean.trim() ? (
+                        seg.clean
+                      ) : (
+                        <span className="italic text-muted">Filler only — nothing left after cleaning.</span>
+                      )}
+                    </Bubble>
+                  </div>
+                ) : (
+                  <Bubble accent={mode === "clean" ? "clean" : "verbatim"}>
+                    {mode === "clean" ? (
+                      seg.clean.trim() || (
+                        <span className="italic text-muted">Filler only — nothing left after cleaning.</span>
+                      )
+                    ) : (
+                      <Verbatim raw={seg.raw} clean={seg.clean} />
+                    )}
+                  </Bubble>
+                )}
               </div>
             </div>
           );
         })}
       </div>
 
-      {mode === "verbatim" && (
+      {mode !== "clean" && (
         <div className="mt-4 flex items-center gap-2 text-[11px] text-muted">
-          <span className="inline-block rounded bg-neon3/15 px-1.5 py-0.5 text-neon3 line-through decoration-neon3/70">removed</span>
-          fillers, stutters &amp; background noise stripped in the cleaned view
+          <span className="inline-block rounded bg-neon3/15 px-1.5 py-0.5 text-neon3 line-through decoration-neon3/70">
+            removed
+          </span>
+          fillers, stutters &amp; background noise stripped from the cleaned version
         </div>
       )}
+    </div>
+  );
+}
+
+function ColumnHead({ tint, label, note }: { tint: string; label: string; note: string }) {
+  return (
+    <div className="text-[10.5px] uppercase tracking-[0.1em]">
+      <span className={`font-semibold ${tint}`}>{label}</span>
+      <span className="ml-2 normal-case tracking-normal text-muted">{note}</span>
+    </div>
+  );
+}
+
+function Bubble({
+  accent,
+  caption,
+  children,
+}: {
+  accent: "clean" | "verbatim";
+  caption?: string;
+  children: ReactNode;
+}) {
+  const tone =
+    accent === "clean"
+      ? "border-ok/20 bg-ok/[0.04]"
+      : "border-neon3/20 bg-neon3/[0.04]";
+  return (
+    <div
+      className={`whitespace-pre-wrap rounded-2xl rounded-tl-md border px-4 py-2.5 text-[13.5px] leading-relaxed text-[#dfe2fb] ${tone}`}
+    >
+      {caption && (
+        <div
+          className={`mb-1.5 text-[9.5px] font-semibold uppercase tracking-[0.12em] md:hidden ${
+            accent === "clean" ? "text-ok" : "text-neon3"
+          }`}
+        >
+          {caption}
+        </div>
+      )}
+      {children}
     </div>
   );
 }

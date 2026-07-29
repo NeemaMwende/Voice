@@ -62,13 +62,17 @@ export default function NotesPage() {
     );
   }
 
+  // h-, not just min-h-, on large screens: the notes panel scrolls internally
+  // via `flex-1 min-h-0 overflow-auto`, and that only works if an ancestor has
+  // a definite height. With min-h alone the card just grows and the whole page
+  // scrolls instead. Small screens keep the natural flow.
   return (
-    <div className="flex flex-col min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)]">
       <PageHeader title="Notes" subtitle="Every set of generated notes, in one place." />
 
       <div className="grid flex-1 min-h-0 grid-cols-1 items-stretch gap-6 lg:grid-cols-[300px_1fr]">
-        {/* list */}
-        <div className="space-y-2.5">
+        {/* list — scrolls on its own so a long library can't push the page */}
+        <div className="space-y-2.5 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           {recordings.map((r) => (
             <button
               key={r.id}

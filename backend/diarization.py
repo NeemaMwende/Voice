@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from typing import Dict, List, Optional
 
 MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
@@ -24,9 +25,16 @@ DIARIZE_SR = 16000
 
 # Lazily initialised so the (heavy) model only loads on first use, and a
 # missing token / package doesn't crash the whole API at import time.
+#
+# The lock matters: loading takes tens of seconds, and FastAPI serves sync
+# endpoints from a threadpool. Without it a second caller arriving mid-load
+# would see _loaded already set but _pipeline still None, and wrongly conclude
+# diarization is unavailable — turning a multi-speaker transcript into a
+# single-speaker one for no reason.
 _pipeline = None
 _load_error: Optional[str] = None
 _loaded = False
+_load_lock = threading.Lock()
 
 
 class DiarizationUnavailable(RuntimeError):
@@ -34,11 +42,25 @@ class DiarizationUnavailable(RuntimeError):
 
 
 def _load_pipeline() -> None:
-    global _pipeline, _load_error, _loaded
+    """Load the pipeline once, blocking any concurrent caller until it's done."""
+    global _loaded
     if _loaded:
         return
-    _loaded = True
+    with _load_lock:
+        # Re-check inside the lock: whoever held it may have finished the load
+        # while we were waiting.
+        if _loaded:
+            return
+        try:
+            _do_load()
+        finally:
+            # Set on every path, failures included, so a broken load isn't
+            # retried on every request.
+            _loaded = True
 
+
+def _do_load() -> None:
+    global _pipeline, _load_error
     try:
         import torch
         from pyannote.audio import Pipeline
@@ -118,6 +140,7 @@ def diarize(
     num_speakers: Optional[int] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
+    waveform=None,
 ) -> List[Dict[str, object]]:
     """Return speaker turns as ``[{"start", "end", "speaker"}]`` sorted by start.
 
@@ -125,6 +148,12 @@ def diarize(
     ``num_speakers`` — pyannote otherwise estimates it and can over-split a
     single voice into many phantom speakers. ``min_speakers`` / ``max_speakers``
     bound the estimate when the exact count isn't known.
+
+    ``waveform`` is an optional pre-decoded 16 kHz mono float32 numpy array. The
+    VAD pre-pass already holds one (with the silence removed), so passing it
+    here skips a second ffmpeg decode and keeps pyannote off the dead air.
+    Timestamps then refer to that array's timeline, so the caller is
+    responsible for mapping them back.
 
     Raises DiarizationUnavailable if the pipeline can't be loaded/run.
     """
@@ -141,13 +170,22 @@ def diarize(
         if max_speakers and max_speakers > 0:
             params["max_speakers"] = int(max_speakers)
 
-    # Prefer decoding via ffmpeg (robust); fall back to letting pyannote read
-    # the path directly if ffmpeg isn't available.
-    try:
-        audio_input: object = _load_waveform(audio_path)
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        print(f"[diarization] ffmpeg decode failed, using path directly: {exc}")
-        audio_input = audio_path
+    audio_input: object
+    if waveform is not None:
+        import torch
+
+        audio_input = {
+            "waveform": torch.from_numpy(waveform).unsqueeze(0),  # (1 channel, samples)
+            "sample_rate": DIARIZE_SR,
+        }
+    else:
+        # Prefer decoding via ffmpeg (robust); fall back to letting pyannote
+        # read the path directly if ffmpeg isn't available.
+        try:
+            audio_input = _load_waveform(audio_path)
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            print(f"[diarization] ffmpeg decode failed, using path directly: {exc}")
+            audio_input = audio_path
 
     try:
         output = _pipeline(audio_input, **params)

@@ -23,7 +23,10 @@ type TranscriptionSegment = {
   speaker: string;
   start: number;
   end: number;
+  /** verbatim — fillers, stutters and noise tags included */
   text: string;
+  /** the same turn de-noised; "" when the turn was nothing but filler */
+  clean?: string;
 };
 
 type TranscriptionResponse = {
@@ -115,12 +118,13 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     color: SPEAKER_COLORS[i % SPEAKER_COLORS.length],
   }));
 
-  // backend returns cleaned text only, so raw === clean (no noise diff to show)
+  // Both versions come from the backend: `text` is verbatim, `clean` is the
+  // de-noised twin. Older responses only had `text`, so fall back to it.
   const segments: Segment[] = response.segments.map((s) => ({
     speakerId: slugifySpeaker(s.speaker),
     tSec: s.start,
     raw: s.text.trim(),
-    clean: s.text.trim(),
+    clean: (s.clean ?? s.text).trim(),
   }));
 
   // AI-generated note sections (Ollama). Each is best-effort on the backend,
@@ -289,15 +293,15 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="flex flex-col min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)]">
       <PageHeader
         title="Capture & Transcribe"
         subtitle="Upload a file or record live — we transcribe it, split it by speaker, and pull out the key notes."
       />
 
-      <div className="grid flex-1 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
-        {/* Input card */}
-        <div className="self-start rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+      <div className="grid flex-1 min-h-0 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
+        {/* Input card — scrolls if the controls outgrow a short window */}
+        <div className="self-start rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7 lg:max-h-full lg:overflow-y-auto">
           {/* mode switch */}
           <div className="mb-6 flex gap-1.5 rounded-2xl bg-white/[0.04] p-1.5">
             {([
