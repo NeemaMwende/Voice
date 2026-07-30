@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useApp, Recording } from "@/context/AppContext";
-import { fmtSize, NoteSection, Speaker, Segment } from "@/lib/notes";
+import { fmtSize, NoteSection, SentenceSpan, Speaker, Segment } from "@/lib/notes";
 import { IconMic, IconUpload } from "@/components/icons";
 import NotesViewer from "@/components/NotesViewer";
 import LiveRecorder from "@/components/LiveRecorder";
@@ -27,6 +27,9 @@ type TranscriptionSegment = {
   text: string;
   /** the same turn de-noised; "" when the turn was nothing but filler */
   clean?: string;
+  /** business content only, small talk removed */
+  relevant?: string;
+  sentences?: SentenceSpan[];
 };
 
 type TranscriptionResponse = {
@@ -118,13 +121,16 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     color: SPEAKER_COLORS[i % SPEAKER_COLORS.length],
   }));
 
-  // Both versions come from the backend: `text` is verbatim, `clean` is the
-  // de-noised twin. Older responses only had `text`, so fall back to it.
+  // Every tier comes from the backend: `text` is verbatim, `clean` drops the
+  // fillers, `relevant` additionally drops the small talk, and `sentences`
+  // records which is which. Older responses only had `text`, so fall back.
   const segments: Segment[] = response.segments.map((s) => ({
     speakerId: slugifySpeaker(s.speaker),
     tSec: s.start,
     raw: s.text.trim(),
     clean: (s.clean ?? s.text).trim(),
+    relevant: s.relevant ?? undefined,
+    sentences: s.sentences?.length ? s.sentences : undefined,
   }));
 
   // AI-generated note sections (Ollama). Each is best-effort on the backend,

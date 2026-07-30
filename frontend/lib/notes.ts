@@ -7,14 +7,30 @@ export type Speaker = {
   color: string;
 };
 
+/**
+ * One sentence of a turn. `label` is the relevance verdict: "business" content
+ * feeds the notes (and later the SOP), "smalltalk" is set aside — but never
+ * deleted, so the transcript can always show what was excluded and why.
+ */
+export type SentenceSpan = {
+  raw: string;
+  clean: string;
+  label: "business" | "smalltalk";
+  reason?: string;
+};
+
 export type Segment = {
   speakerId: string;
   /** start offset in seconds */
   tSec: number;
   /** exactly what was said — fillers, stutters, background noise */
   raw: string;
-  /** the same turn after noise + filler removal */
+  /** the same turn after noise + filler removal; every topic still present */
   clean: string;
+  /** cleaned business content only, with the small talk dropped */
+  relevant?: string;
+  /** per-sentence breakdown; absent on recordings made before this existed */
+  sentences?: SentenceSpan[];
 };
 
 /**

@@ -51,9 +51,9 @@ class SummaryUnavailable(RuntimeError):
     """Raised when the Ollama server can't be reached or returns nothing usable."""
 
 
-def _chat(system: str, user: str, *, as_json: bool = False) -> str:
+def _chat(system: str, user: str, *, as_json: bool = False, model: Optional[str] = None) -> str:
     payload: Dict[str, object] = {
-        "model": OLLAMA_MODEL,
+        "model": model or OLLAMA_MODEL,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -81,13 +81,13 @@ def _chat(system: str, user: str, *, as_json: bool = False) -> str:
     return (body.get("message", {}) or {}).get("content", "").strip()
 
 
-def _chat_json(system: str, user: str) -> Dict[str, object]:
+def _chat_json(system: str, user: str, *, model: Optional[str] = None) -> Dict[str, object]:
     """Chat in JSON mode, returning ``{}`` rather than raising on bad output.
 
     Individual passes are best-effort: losing the insights section shouldn't
     cost the caller its overview.
     """
-    raw = _chat(system, user, as_json=True)
+    raw = _chat(system, user, as_json=True, model=model)
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:

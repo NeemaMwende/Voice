@@ -17,6 +17,7 @@ carrying meaning.
 from __future__ import annotations
 
 import re
+from typing import Any, Dict, List
 
 # Non-speech annotations Whisper emits: [BLANK_AUDIO], (laughs), *coughs*.
 _ANNOTATION_RE = re.compile(r"[\[(*]\s*[^\])*\n]{1,40}\s*[\])*]")
@@ -118,3 +119,94 @@ def clean_text(text: str) -> str:
 def count_removed(raw: str, cleaned: str) -> int:
     """How many words the cleaning pass dropped (for the UI's noise counter)."""
     return max(0, len(raw.split()) - len(cleaned.split()))
+
+
+# ---------------------------------------------------------------------------
+# Sentence splitting
+#
+# The relevance pass (relevance.py) judges small talk sentence by sentence, so
+# a turn has to be broken up first. The split is *lossless* by construction —
+# every slice is contiguous, so "".join(split_sentences(t)) == t exactly. That
+# invariant is what lets us promise the verbatim view still shows every word
+# that was spoken, no matter what later stages decide to drop.
+# ---------------------------------------------------------------------------
+
+_TERMINATORS = ".!?"
+
+# A slice this short isn't a sentence — it's an abbreviation ("e.g.", "Mr.")
+# that the scanner broke on. Merged back into the previous slice.
+_MIN_SENTENCE_CHARS = 3
+
+
+def split_sentences(text: str) -> List[str]:
+    """Split a turn into sentences, keeping all whitespace and punctuation."""
+    if not text:
+        return []
+
+    slices: List[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        if char in _TERMINATORS:
+            j = i + 1
+            while j < n and text[j] in _TERMINATORS:
+                j += 1
+            while j < n and text[j].isspace():
+                j += 1
+            slices.append(text[start:j])
+            start = j
+            i = j
+        elif char == "\n":
+            # Paragraph breaks from consolidate_segments are sentence breaks too.
+            j = i
+            while j < n and text[j] == "\n":
+                j += 1
+            slices.append(text[start:j])
+            start = j
+            i = j
+        else:
+            i += 1
+    if start < n:
+        slices.append(text[start:])
+
+    # Glue abbreviation fragments back onto the sentence they belong to.
+    merged: List[str] = []
+    for piece in slices:
+        if merged and len(piece.strip()) < _MIN_SENTENCE_CHARS:
+            merged[-1] += piece
+        elif merged and len(merged[-1].strip()) < _MIN_SENTENCE_CHARS:
+            merged[-1] += piece
+        else:
+            merged.append(piece)
+    return [s for s in merged if s]
+
+
+def annotate_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Attach per-sentence raw/clean pairs plus the whole-turn cleaned text.
+
+    Cleaning runs per sentence rather than per turn so each sentence carries its
+    own verbatim and de-noised form. That alignment is what the UI needs to
+    strike out fillers *within* a sentence while striking out an off-topic
+    sentence as a whole.
+    """
+    for seg in segments:
+        raw = seg["text"]
+        sentences = []
+        for piece in split_sentences(raw):
+            cleaned = clean_text(piece)
+            sentences.append(
+                {
+                    "raw": piece,
+                    "clean": cleaned,
+                    # relevance.py overwrites this; "business" is the safe
+                    # default so a skipped/failed pass keeps everything.
+                    "label": "business",
+                }
+            )
+        seg["sentences"] = sentences
+        # Whole-turn cleaned text keeps the exact meaning it had before
+        # sentences existed, so nothing downstream of it changes.
+        seg["clean"] = clean_text(raw)
+    return segments

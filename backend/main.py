@@ -24,6 +24,7 @@ from faster_whisper import WhisperModel
 import cleaning
 import diarization
 import progress
+import relevance
 import summarization
 import vad
 import db
@@ -97,14 +98,30 @@ model = WhisperModel(
 )
 
 
+class SentenceSpan(BaseModel):
+    """One sentence of a turn, in all three of its forms."""
+
+    raw: str
+    clean: str = ""
+    # "business" (keep) or "smalltalk" (set aside) — see relevance.py.
+    label: str = "business"
+    # Why it was set aside; only present on small talk.
+    reason: str = ""
+
+
 class SpeakerSegment(BaseModel):
     speaker: str
     start: float
     end: float
     # Verbatim, exactly as spoken — fillers, stutters and noise tags included.
     text: str
-    # Same turn with the noise stripped. Empty when the turn was pure filler.
+    # Same turn with lexical noise stripped, but every topic still present.
     clean: str = ""
+    # Business content only: cleaned, minus the small talk. This is the text an
+    # SOP would be written from. Empty when the whole turn was incidental.
+    relevant: str = ""
+    # Per-sentence breakdown backing the transcript's two-colour strikethrough.
+    sentences: List[SentenceSpan] = []
 
 
 class NoteSection(BaseModel):
@@ -296,24 +313,24 @@ def build_default_speaker_segments(
     return result
 
 
-def add_clean_text(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Attach the de-noised version of each turn alongside the verbatim one."""
-    for seg in segments:
-        seg["clean"] = cleaning.clean_text(seg["text"])
-    return segments
+def labeled_transcript(segments: List[Dict[str, Any]], *, tier: str = "clean") -> str:
+    """``Speaker 1: …`` transcript at the requested cleanliness tier.
 
-
-def labeled_transcript(segments: List[Dict[str, Any]]) -> str:
-    """``Speaker 1: …`` transcript — what the summarizer and namer both read.
-
-    Uses the cleaned turns: fillers are pure noise to a summarizer, and a turn
-    that cleaned down to nothing has nothing to summarize.
+    ``tier="clean"`` keeps every topic with the lexical noise removed;
+    ``tier="relevant"`` additionally drops the small talk. A turn that reduces
+    to nothing at the requested tier is omitted entirely rather than emitted as
+    a bare speaker label.
     """
     lines = []
     for seg in segments:
-        # "clean" missing means cleaning never ran; "clean" empty means the turn
-        # really was pure filler, which the summarizer should not see at all.
-        text = seg["clean"] if "clean" in seg else seg["text"]
+        # A missing key means that stage never ran, so fall back a tier. An
+        # empty value is a real answer — the turn had nothing at this tier.
+        if tier == "relevant" and "relevant" in seg:
+            text = seg["relevant"]
+        elif "clean" in seg:
+            text = seg["clean"]
+        else:
+            text = seg["text"]
         if text.strip():
             lines.append(f"{seg['speaker']}: {text}")
     return "\n\n".join(lines)
@@ -356,6 +373,8 @@ def health():
         "diarization_note": diarization.unavailable_reason(),
         "silero_vad": vad.ENABLED,
         "verbatim_prompt": VERBATIM,
+        "relevance_filter": relevance.ENABLED,
+        "relevance_model": relevance.MODEL,
     }
 
 
@@ -463,17 +482,38 @@ def _run_transcription(
         speaker_segments = build_default_speaker_segments(raw_segments, to_original)
 
     # Collapse consecutive same-speaker turns into one consolidated block, then
-    # attach each turn's de-noised twin for the Transcript tab's side-by-side.
+    # split each into sentences carrying their own verbatim/cleaned pair.
     speaker_segments = consolidate_segments(speaker_segments)
-    speaker_segments = add_clean_text(speaker_segments)
+    speaker_segments = cleaning.annotate_segments(speaker_segments)
 
     # Swap Speaker 1/2 for real names wherever the conversation reveals them.
-    progress.update(job_id, 76, "naming", "Identifying speakers")
+    progress.update(job_id, 72, "naming", "Identifying speakers")
     speaker_segments = apply_speaker_names(speaker_segments)
 
-    # Summarize into the full note set (best-effort; never fatal). The
-    # speaker-labelled transcript goes in so the notes can attribute by name.
+    # Set the small talk aside. Nothing is deleted — sentences are only
+    # labelled, so the transcript can still show exactly what was excluded.
+    progress.update(job_id, 76, "filtering", "Separating business discussion")
+    speaker_segments = relevance.label_segments(
+        speaker_segments,
+        on_progress=lambda frac: progress.update(
+            job_id, 76 + 4 * frac, "filtering", "Separating business discussion"
+        ),
+    )
+    tally = relevance.counts(speaker_segments)
+    print(
+        f"[relevance] {tally['smalltalk']} of {tally['total']} sentences "
+        f"set aside as small talk"
+    )
+
+    # Summarize into the full note set (best-effort; never fatal). Notes are
+    # built from the business-only tier — small talk would otherwise show up as
+    # "action items" — and stay speaker-labelled so they can attribute by name.
     progress.update(job_id, 80, "analyzing", "Writing notes")
+    notes_source = (
+        labeled_transcript(speaker_segments, tier="relevant")
+        or labeled_transcript(speaker_segments)
+        or transcript
+    )
     summary_text: Optional[str] = None
     key_points: List[str] = []
     action_items: List[str] = []
@@ -481,7 +521,7 @@ def _run_transcription(
     outline: List[Dict[str, Any]] = []
     try:
         result = summarization.summarize(
-            labeled_transcript(speaker_segments) or transcript,
+            notes_source,
             on_progress=lambda frac, label: progress.update(
                 job_id, 80 + 18 * frac, "analyzing", label
             ),
