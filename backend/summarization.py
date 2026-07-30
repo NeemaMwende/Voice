@@ -34,8 +34,7 @@ from typing import Callable, Dict, List, Optional
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 
-# Characters per map-reduce chunk. ~6k chars ≈ 1.5k tokens, comfortably inside
-# the context window we request below with room for the prompt + output.
+
 CHUNK_CHARS = 6000
 NUM_CTX = 8192
 REQUEST_TIMEOUT = 300  # seconds; local models can be slow on long inputs
@@ -173,6 +172,236 @@ def _is_meaningful(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Invented-name guard
+# ---------------------------------------------------------------------------
+# Small local models happily attach an owner to every action item even when the
+# transcript names nobody, reaching for placeholders ("John", "Jane") or a name
+# lifted from the prompt's own example. The prompts below ask for no owner in
+# that case, but asking isn't enough — so every generated string is also run
+# through here, and any attribution naming a person the transcript never
+# mentions is removed. Same principle as _plausible_name for speaker labels:
+# trust a name only if the source text actually contains it.
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’\-]*")
+
+# One capitalised, non-acronym word — "Andrew" matches, "CRM" and "Q3" don't.
+_PERSON_TOKEN_RE = re.compile(r"[A-Z][a-z'’\-]+")
+
+# Up to three such words: "Jane", "Collins Kipkorir".
+_NAME_PHRASE = r"[A-Z][a-z'’\-]+(?:\s+[A-Z][a-z'’\-]+){0,2}"
+
+# Several of those conjoined: "John and Jane", "Sarah, Collins & Bob". Matched as
+# one unit so removing an invented owner can't leave "and Jane" dangling.
+_NAME_LIST = rf"{_NAME_PHRASE}(?:\s*(?:,|/|&|and)\s*{_NAME_PHRASE})*"
+_NAME_SPLIT_RE = re.compile(r",|/|&|\band\b")
+
+# Capitalised words that are never a person, so a date or deadline isn't mistaken
+# for an owner and stripped out of an otherwise good action item.
+_NOT_PERSON_WORDS = frozenset(
+    {
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "sunday", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri",
+        "sat", "sun",
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+        "nov", "dec",
+        "today", "tomorrow", "yesterday", "tonight", "week", "month", "quarter",
+        "year", "eod", "eow",
+    }
+)
+
+# A trailing "(Owner)" / "[Owner, Owner]" credit.
+_OWNER_PAREN_RE = re.compile(r"\s*[\(\[]\s*([^()\[\]]{1,60}?)\s*[\)\]]")
+
+# "… to Jane", "… by Jane" — an owner named via a preposition.
+_ATTRIB_PREP_RE = re.compile(
+    rf"([,;]?\s+\b(?:by|to|for|with|from)\s+)({_NAME_LIST})\b"
+)
+
+# "Jane will confirm …", "Jane agreed to send …" — an owner in subject position.
+# The modal goes with the name, leaving a bare imperative behind. A bare "to" is
+# deliberately not in this list: it would read the leading verb of "Escalate to
+# Sarah" as the name. _ATTRIB_PREP_RE already covers "to <Name>".
+_ATTRIB_SUBJECT_RE = re.compile(
+    rf"\b({_NAME_LIST})\s+(will|shall|should|must|needs\s+to|has\s+to|"
+    rf"is\s+to|agreed\s+to|agrees\s+to)\s+"
+)
+
+# "Andrew raised the integration", "John and Jane discussed the CRM" — narrative
+# attribution in the overview and key points. Only verbs that demand a human
+# subject are listed, so an invented *non*-name ("Compliance is required") can't
+# be mistaken for a person; generic is/has/needs are deliberately excluded.
+_REPORTING_VERBS = (
+    r"said|says|asked|asks|added|adds|noted|notes|mentioned|mentions|"
+    r"explained|explains|described|describes|confirmed|confirms|raised|raises|"
+    r"discussed|discusses|suggested|suggests|proposed|proposes|requested|"
+    r"requests|reported|reports|agreed|agrees|clarified|clarifies|"
+    r"emphasized|emphasizes|emphasised|emphasises|highlighted|highlights|outlined|"
+    r"outlines|presented|presents|introduced|introduces|promised|promises|"
+    r"committed|commits|volunteered|offered|offers|thanked|thanks|joined|"
+    r"joins|owns|leads|manages|handles"
+)
+_ATTRIB_NARRATIVE_RE = re.compile(rf"\b({_NAME_LIST})\s+(?={_REPORTING_VERBS}\b)")
+
+
+def _vocabulary(text: str) -> set:
+    """Every word in the source text, lowercased — the set of names we trust."""
+    return {match.group(0).lower() for match in _WORD_RE.finditer(text)}
+
+
+def _has_unknown_name(phrase: str, vocab: set) -> bool:
+    """True if ``phrase`` names a person the source text never mentions."""
+    tokens = _PERSON_TOKEN_RE.findall(phrase)
+    if not tokens:
+        return False
+    return any(
+        token.lower() not in _NOT_PERSON_WORDS and token.lower() not in vocab
+        for token in tokens
+    )
+
+
+def _split_names(phrase: str) -> List[str]:
+    return [part.strip() for part in _NAME_SPLIT_RE.split(phrase) if part.strip()]
+
+
+def _keep_known(phrase: str, vocab: set) -> Optional[str]:
+    """The verified part of ``phrase``, or None if all of it is invented.
+
+    Filters token by token, not name by name: when the model bolts an invented
+    surname onto a real first name, "Collins Kipkorir" should come back as
+    "Collins" rather than being thrown away wholesale.
+    """
+    kept: List[str] = []
+    for part in _split_names(phrase):
+        tokens = [
+            token
+            for token in _PERSON_TOKEN_RE.findall(part)
+            if token.lower() in vocab or token.lower() in _NOT_PERSON_WORDS
+        ]
+        if tokens:
+            kept.append(" ".join(tokens))
+    return " and ".join(kept) if kept else None
+
+
+# Endings a person's name effectively never has, but a topic word often does. A
+# capitalised topic word slipping past the vocabulary check ("Pricing discussed
+# at length") must not be rewritten as if it were a participant.
+_TOPIC_WORD_SUFFIXES = (
+    "ing", "tion", "sion", "ment", "ness", "ance", "ence", "ity", "ism",
+    "logy", "ship", "hood", "ware", "ability",
+)
+
+
+def _looks_like_topic_word(phrase: str) -> bool:
+    tokens = _PERSON_TOKEN_RE.findall(phrase)
+    return bool(tokens) and all(
+        token.lower().endswith(_TOPIC_WORD_SUFFIXES) for token in tokens
+    )
+
+
+def _is_owner_list(inner: str) -> bool:
+    """True if a parenthetical holds nothing but names — "(Jane)", "(Jane, Bob)".
+
+    Keeps real asides like "(see the Q3 numbers)" out of the scrubber's reach.
+    """
+    parts = _split_names(inner)
+    return bool(parts) and all(re.fullmatch(_NAME_PHRASE, part) for part in parts)
+
+
+def _tidy(text: str) -> str:
+    """Close up the whitespace and dangling punctuation a removal leaves behind."""
+    text = re.sub(r"[\(\[]\s*[\)\]]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([,;])\1+", r"\1", text)
+    text = text.strip().strip(",;").strip()
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text
+
+
+def _drop_paren(match: "re.Match[str]", vocab: set) -> str:
+    """"Confirm the CRM tasks (Jane)" -> "Confirm the CRM tasks"."""
+    inner = match.group(1)
+    if not (_is_owner_list(inner) and _has_unknown_name(inner, vocab)):
+        return match.group(0)
+    survivors = _keep_known(inner, vocab)
+    return f" ({survivors})" if survivors else ""
+
+
+def _drop_prep(match: "re.Match[str]", vocab: set) -> str:
+    """"Assign the project to John" -> "Assign the project"."""
+    preposition, names = match.group(1), match.group(2)
+    if not _has_unknown_name(names, vocab):
+        return match.group(0)
+    survivors = _keep_known(names, vocab)
+    return f"{preposition}{survivors}" if survivors else ""
+
+
+def _drop_subject(match: "re.Match[str]", vocab: set) -> str:
+    """"Jane will confirm the tasks" -> "Confirm the tasks".
+
+    The modal goes with the invented name so an imperative is left behind,
+    which is the voice the rest of the action items are written in.
+    """
+    names, verb = match.group(1), match.group(2)
+    if not _has_unknown_name(names, vocab):
+        return match.group(0)
+    survivors = _keep_known(names, vocab)
+    return f"{survivors} {verb} " if survivors else ""
+
+
+def _anonymize_subject(match: "re.Match[str]", vocab: set) -> str:
+    """"Andrew raised the integration" -> "One participant raised the integration".
+
+    Deleting a sentence's subject would wreck it, so the speaker is described
+    generically instead — accurate, and invents nobody.
+    """
+    names = match.group(1)
+    if not _has_unknown_name(names, vocab) or _looks_like_topic_word(names):
+        return match.group(0)
+    survivors = _keep_known(names, vocab)
+    if survivors:
+        return f"{survivors} "
+    return "participants " if len(_split_names(names)) > 1 else "one participant "
+
+
+_NAME_RULES = (
+    (_OWNER_PAREN_RE, _drop_paren),
+    (_ATTRIB_PREP_RE, _drop_prep),
+    (_ATTRIB_SUBJECT_RE, _drop_subject),
+    (_ATTRIB_NARRATIVE_RE, _anonymize_subject),
+)
+
+
+def _scrub_names(text: str, vocab: set) -> str:
+    """Strip owner attributions that name someone absent from the transcript."""
+    if not text:
+        return ""
+    for pattern, rule in _NAME_RULES:
+        text = pattern.sub(lambda match, _rule=rule: _rule(match, vocab), text)
+    return _tidy(text)
+
+
+def _scrub_all(values: List[str], vocab: set) -> List[str]:
+    return [cleaned for cleaned in (_scrub_names(v, vocab) for v in values) if cleaned]
+
+
+def _scrub_sections(
+    sections: List[Dict[str, object]], vocab: set
+) -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
+    for section in sections:
+        heading = _scrub_names(str(section.get("heading", "")), vocab)
+        bullets = _scrub_all([str(b) for b in section.get("bullets", [])], vocab)  # type: ignore[union-attr]
+        if not heading or not bullets:
+            continue
+        out.append({"heading": heading, "bullets": bullets})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Map step — condense a chunk to notes plus its own outline sections
 # ---------------------------------------------------------------------------
 
@@ -184,8 +413,11 @@ _MAP_SYSTEM = (
     "any commitment or follow-up.\n"
     '  "sections": an array of 1-4 objects, each {"heading": short topic title, '
     '"bullets": array of 2-6 sentences describing what was said under that '
-    "topic, in the order it was said}. Attribute statements to the speaker by "
-    "name when the transcript names them (e.g. \"Collins Kipkorir explains …\").\n"
+    "topic, in the order it was said}. Attribute statements to a speaker by "
+    "name ONLY when the transcript itself gives that speaker's name (e.g. "
+    '"Collins Kipkorir explains …"). Where a turn is only labelled '
+    '"Speaker 1", write about it without a name — say "one participant" or '
+    "just describe what was said. Never invent, guess or substitute a name.\n"
     "Cover the whole excerpt. Do not invent anything that is not in the text."
 )
 
@@ -209,27 +441,37 @@ _OVERVIEW_SYSTEM = (
     '"summary" (a 3-5 sentence plain-English overview of what the conversation '
     "was about, who took part, and where it landed) and "
     '"key_points" (an array of 5-10 short strings: the most important '
-    "takeaways, decisions and facts). Do not invent anything."
+    "takeaways, decisions and facts). Do not invent anything. Refer to people "
+    "by name only where the notes name them; otherwise describe them by role "
+    "or as participants. Never invent or guess a person's name."
 )
 
 _INSIGHTS_SYSTEM = (
     "You are a meeting-notes assistant. From the notes below, reply with ONLY a "
     "JSON object with exactly two fields:\n"
     '  "action_items": an array of 0-10 strings. Each one is a task somebody '
-    "agreed to DO after the meeting. Start each with a verb, say who owns it, "
-    "and include enough detail to act on it. A topic that was merely discussed "
-    "is NOT an action item — if nobody committed to anything, return an empty "
-    "array.\n"
+    "agreed to DO after the meeting. Start each with a verb and include enough "
+    "detail to act on it. A topic that was merely discussed is NOT an action "
+    "item — if nobody committed to anything, return an empty array.\n"
+    "  Attribute a task to an owner ONLY when the notes explicitly state who "
+    "took it on, and then use that person's exact name from the notes in "
+    "parentheses at the end. If the notes do not say who owns a task, write the "
+    "task with NO owner and no parentheses at all — an unowned task is correct "
+    "and expected. Never guess an owner, never use a placeholder or example "
+    "name, and never reuse one task's owner on another task.\n"
     '  "insights": an array of 2-5 objects {"heading": a short theme, '
     '"bullets": array of 2-5 short factual sentences}. Group related facts '
     "under each theme; never emit a theme with only one bullet. Choose only "
     "themes the conversation actually covers — for example Decisions, "
     "Risks & blockers, Open questions, Numbers & pricing, Tools & systems, "
     "Timeline. Do not invent anything.\n"
-    "Example of the shape and level of detail expected:\n"
+    "Use only names that literally appear in the notes. Never introduce a "
+    "person who is not named there.\n"
+    "Example of the shape and level of detail expected — note that neither task "
+    "carries an owner, because the notes behind them named nobody:\n"
     '{"action_items": ["Provision a free sandbox account for the client team '
-    'so they can test the product (Andrew)", "Confirm which vector database '
-    'the agent system uses and send the technical details (Andrew)"], '
+    'so they can test the product", "Confirm which vector database '
+    'the agent system uses and send the technical details"], '
     '"insights": [{"heading": "Pricing", "bullets": ["The product is '
     'token-based; LLM usage is charged.", "$25/month grants 400 tokens."]}]}'
 )
@@ -252,13 +494,21 @@ def summarize(transcript: str, *, on_progress: ProgressFn = None) -> Dict[str, o
         if on_progress:
             on_progress(fraction, label)
 
+    # Names the transcript actually contains. Anything the model attributes to
+    # someone outside this set is an invention and gets stripped below.
+    vocab = _vocabulary(transcript)
+
     chunks = _chunk(transcript, CHUNK_CHARS)
     notes_lines: List[str] = []
     outline: List[Dict[str, object]] = []
     for i, chunk in enumerate(chunks):
         mapped = _map_chunk(chunk, i + 1, len(chunks))
-        notes_lines.extend(str(n) for n in mapped["notes"])  # type: ignore[union-attr]
-        outline.extend(mapped["sections"])  # type: ignore[arg-type]
+        # Scrub here, not just at the end: the notes are the reduce step's input,
+        # so a name invented now would otherwise propagate into every section.
+        notes_lines.extend(
+            _scrub_all([str(n) for n in mapped["notes"]], vocab)  # type: ignore[union-attr]
+        )
+        outline.extend(_scrub_sections(mapped["sections"], vocab))  # type: ignore[arg-type]
         # The map step is the bulk of the work; give it 70% of the progress bar.
         report(0.7 * (i + 1) / len(chunks), f"Reading part {i + 1} of {len(chunks)}")
 
@@ -266,13 +516,19 @@ def summarize(transcript: str, *, on_progress: ProgressFn = None) -> Dict[str, o
     notes = "\n".join(f"- {line}" for line in notes_lines) or transcript
 
     overview_parsed = _chat_json(_OVERVIEW_SYSTEM, f"Notes:\n\n{notes}")
-    summary = str(overview_parsed.get("summary", "")).strip()
-    key_points = _strings(overview_parsed.get("key_points", []), limit=12)
+    summary = _scrub_names(str(overview_parsed.get("summary", "")).strip(), vocab)
+    key_points = _scrub_all(
+        _strings(overview_parsed.get("key_points", []), limit=12), vocab
+    )
     report(0.85, "Writing the overview")
 
     insights_parsed = _chat_json(_INSIGHTS_SYSTEM, f"Notes:\n\n{notes}")
-    action_items = _strings(insights_parsed.get("action_items", []), limit=12)
-    insights = _sections(insights_parsed.get("insights", []), limit=6)
+    action_items = _scrub_all(
+        _strings(insights_parsed.get("action_items", []), limit=12), vocab
+    )
+    insights = _scrub_sections(
+        _sections(insights_parsed.get("insights", []), limit=6), vocab
+    )
     report(1.0, "Pulling out insights")
 
     if not (summary or key_points or outline or insights or action_items):
