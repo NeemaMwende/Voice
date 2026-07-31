@@ -7,6 +7,13 @@ words into readable turns.
 """
 
 import os
+
+# Fix MKL memory issue on Windows — must be set before numpy/torch imports
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ["MKL_THREADING_LAYER"] = "sequential"
+
+import asyncio
+import concurrent.futures
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -96,6 +103,10 @@ model = WhisperModel(
     compute_type=COMPUTE_TYPE,
     cpu_threads=CPU_THREADS,
 )
+
+# Progress tracking for polling-based progress bar
+_progress_store: Dict[str, dict] = {}
+_inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 class SentenceSpan(BaseModel):
@@ -453,9 +464,7 @@ def _run_transcription(
             done = min(1.0, float(getattr(segment, "end", 0.0) or 0.0) / total_sec)
             progress.update(job_id, 15 + 45 * done, "transcribing", "Transcribing audio")
 
-    transcript = " ".join(
-        getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
-    ).strip()
+    return {"progress_id": progress_id}
 
     # Diarize + merge; fall back to single-speaker grouping if unavailable.
     # pyannote gets the same silence-stripped waveform Whisper did, so its turns

@@ -8,6 +8,30 @@ import { toast } from "./Toast";
 type Status = "idle" | "recording" | "paused";
 
 const BARS = 48;
+const SAMPLE_RATE = 16000;
+
+function encodeWav(samples: Int16Array): Blob {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const dv = new DataView(buf);
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  dv.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true);
+  dv.setUint32(24, SAMPLE_RATE, true);
+  dv.setUint32(28, SAMPLE_RATE * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  writeStr(36, "data");
+  dv.setUint32(40, samples.length * 2, true);
+  new Int16Array(buf, 44).set(samples);
+  return new Blob([buf], { type: "audio/wav" });
+}
 
 export default function LiveRecorder({
   onComplete,
@@ -20,26 +44,31 @@ export default function LiveRecorder({
   const [elapsed, setElapsed] = useState(0);
   const [levels, setLevels] = useState<number[]>(() => new Array(BARS).fill(6));
 
-  const mediaRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const pcmChunksRef = useRef<Int16Array[]>([]);
   const rafRef = useRef<number>(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef(0);
+  const elapsedRef = useRef(0);
 
-  // tear everything down on unmount
   useEffect(() => cleanup, []);
 
   function cleanup() {
     cancelAnimationFrame(rafRef.current);
     if (tickRef.current) clearInterval(tickRef.current);
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    workletNodeRef.current?.disconnect();
+    sourceRef.current?.disconnect();
     audioCtxRef.current?.close().catch(() => {});
+    streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     audioCtxRef.current = null;
+    sourceRef.current = null;
     analyserRef.current = null;
+    workletNodeRef.current = null;
   }
 
   const drawLoop = () => {
@@ -50,7 +79,7 @@ export default function LiveRecorder({
     const step = Math.floor(data.length / BARS) || 1;
     const next: number[] = [];
     for (let i = 0; i < BARS; i++) {
-      const v = data[i * step] / 255; // 0..1
+      const v = data[i * step] / 255;
       next.push(6 + v * 46);
     }
     setLevels(next);
@@ -68,23 +97,30 @@ export default function LiveRecorder({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
-      chunksRef.current = [];
+      pcmChunksRef.current = [];
 
       const AC = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = new AC();
+      const ctx = new AC({ sampleRate: SAMPLE_RATE });
       audioCtxRef.current = ctx;
+
       const source = ctx.createMediaStreamSource(stream);
+      sourceRef.current = source;
+
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.75;
       source.connect(analyser);
       analyserRef.current = analyser;
 
-      const rec = new MediaRecorder(stream);
-      mediaRef.current = rec;
-      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
-      rec.onstop = finalize;
-      rec.start(200);
+      // Load AudioWorklet for PCM conversion
+      await ctx.audioWorklet.addModule("/worklets/pcm-recorder.worklet.js");
+      const workletNode = new AudioWorkletNode(ctx, "pcm-recorder");
+      workletNodeRef.current = workletNode;
+      source.connect(workletNode);
+
+      workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+        pcmChunksRef.current.push(new Int16Array(e.data));
+      };
 
       startedAtRef.current = performance.now();
       setElapsed(0);
@@ -101,39 +137,44 @@ export default function LiveRecorder({
 
   const finalize = () => {
     const dur = elapsedRef.current;
-    const blob = new Blob(chunksRef.current, { type: chunksRef.current[0]?.type || "audio/webm" });
+    // Combine all PCM chunks into one Int16Array
+    const chunks = pcmChunksRef.current;
+    let totalLen = 0;
+    for (const c of chunks) totalLen += c.length;
+    const allPcm = new Int16Array(totalLen);
+    let offset = 0;
+    for (const c of chunks) {
+      allPcm.set(c, offset);
+      offset += c.length;
+    }
+
     cleanup();
     setStatus("idle");
     setLevels(new Array(BARS).fill(6));
-    if (blob.size === 0) return;
+
+    if (allPcm.length === 0) return;
+    const blob = encodeWav(allPcm);
     const url = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "-");
     onComplete({
-      name: `live-recording-${stamp}.webm`,
+      name: `live-recording-${stamp}.wav`,
       size: blob.size,
       url,
       durationSec: Math.max(1, dur),
     });
   };
 
-  // keep a ref of elapsed so finalize() reads the latest value
-  const elapsedRef = useRef(0);
   useEffect(() => {
     elapsedRef.current = elapsed;
   }, [elapsed]);
 
   const pause = () => {
-    const rec = mediaRef.current;
-    if (!rec) return;
     if (status === "recording") {
-      rec.pause();
       cancelAnimationFrame(rafRef.current);
       if (tickRef.current) clearInterval(tickRef.current);
-      // freeze elapsed baseline
       startedAtRef.current = performance.now() - elapsed * 1000;
       setStatus("paused");
     } else if (status === "paused") {
-      rec.resume();
       startedAtRef.current = performance.now() - elapsed * 1000;
       tickRef.current = setInterval(
         () => setElapsed(Math.floor((performance.now() - startedAtRef.current) / 1000)),
@@ -144,7 +185,7 @@ export default function LiveRecorder({
     }
   };
 
-  const stop = () => mediaRef.current?.stop();
+  const stop = () => finalize();
 
   const live = status !== "idle";
 
