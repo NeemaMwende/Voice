@@ -13,7 +13,7 @@ export default function SettingsPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Accent color */}
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           <h2 className="text-[15px] font-semibold mb-1">Accent color</h2>
           <p className="text-[12.5px] text-muted mb-5">
             Sets the app&apos;s highlight color — buttons, active items, and playback highlights.
@@ -31,7 +31,7 @@ export default function SettingsPage() {
                   className={`flex items-center gap-3 rounded-2xl border p-3.5 text-left transition-all ${
                     selected
                       ? "border-neon/70 bg-neon/10 shadow-[0_8px_24px_-10px_rgb(var(--neon))]"
-                      : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]"
+                      : "border-overlay/[0.08] bg-overlay/[0.03] hover:bg-overlay/[0.06]"
                   }`}
                 >
                   {/* triad swatch */}
@@ -55,7 +55,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Appearance / mode */}
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           <h2 className="text-[15px] font-semibold mb-1">Appearance</h2>
           <p className="text-[12.5px] text-muted mb-5">Switch between dark and light.</p>
 
@@ -74,8 +74,8 @@ export default function SettingsPage() {
                   aria-pressed={selected}
                   className={`flex flex-1 items-center justify-center gap-2.5 rounded-2xl border py-4 text-[13.5px] font-semibold transition-all ${
                     selected
-                      ? "border-neon/70 bg-gradient-to-br from-neon/20 to-neon2/10 text-white"
-                      : "border-white/[0.08] bg-white/[0.03] text-muted hover:text-white hover:bg-white/[0.06]"
+                      ? "border-transparent bg-gradient-to-br from-neon to-neon2 text-white"
+                      : "border-overlay/[0.08] bg-overlay/[0.03] text-muted hover:text-fg hover:bg-overlay/[0.06]"
                   }`}
                 >
                   <Icon className="h-4 w-4" /> {label}
@@ -83,11 +83,6 @@ export default function SettingsPage() {
               );
             })}
           </div>
-
-          <p className="mt-4 text-[11.5px] text-muted leading-relaxed">
-            Light mode is a first pass — the shell and panels adapt, but some
-            dark-tuned surfaces are still being refined.
-          </p>
         </div>
       </div>
     </div>

@@ -29,16 +29,16 @@ export default function RecordingsPage() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search recordings, files or tags…"
-          className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] py-3 pl-10 pr-4 text-sm placeholder:text-muted focus:border-neon2 focus:outline-none"
+          className="w-full rounded-xl border border-overlay/[0.08] bg-overlay/[0.04] py-3 pl-10 pr-4 text-sm placeholder:text-muted focus:border-neon2 focus:outline-none"
         />
       </div>
 
       {loading ? (
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center text-[13.5px] text-muted">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center text-[13.5px] text-muted">
           Loading your recordings…
         </div>
       ) : recordings.length === 0 ? (
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center">
           <IconWave className="w-14 h-14 mx-auto opacity-30 mb-4 text-muted" />
           <p className="text-[13.5px] text-muted mb-5">No recordings yet.</p>
           <Link
@@ -53,7 +53,7 @@ export default function RecordingsPage() {
           {filtered.map((r) => (
             <div
               key={r.id}
-              className="rounded-2xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-4"
+              className="rounded-2xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-4"
             >
               <div className="flex items-center gap-4">
                 <button
@@ -77,7 +77,7 @@ export default function RecordingsPage() {
                   ))}
                 </div>
                 <div className="text-xs text-neon2 shrink-0 w-12 text-right">{fmtDuration(r.durationSec)}</div>
-                <Link href={`/notes?id=${r.id}`} className="text-[11px] text-muted hover:text-white shrink-0">
+                <Link href={`/notes?id=${r.id}`} className="text-[11px] text-muted hover:text-fg shrink-0">
                   Notes →
                 </Link>
                 <button

@@ -16,8 +16,12 @@ const config: Config = {
         neon: "rgb(var(--neon) / <alpha-value>)",
         neon2: "rgb(var(--neon2) / <alpha-value>)",
         neon3: "rgb(var(--neon3) / <alpha-value>)",
+        fg: "rgb(var(--fg) / <alpha-value>)",
+        muted: "var(--muted)",
+        overlay: "rgb(var(--overlay) / <alpha-value>)",
+        bar: "rgb(var(--bar) / <alpha-value>)",
+        toast: "var(--toast)",
         ok: "#2ee6a6",
-        muted: "#8b90b5",
       },
       boxShadow: {
         card: "0 20px 60px -20px rgba(0,0,0,0.8)",

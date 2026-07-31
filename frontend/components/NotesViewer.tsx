@@ -45,7 +45,7 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
 
   return (
     <div className="animate-fade flex h-full min-h-0 flex-col">
-      <div className="flex gap-1.5 bg-white/[0.04] p-1.5 rounded-xl mb-4 shrink-0">
+      <div className="flex gap-1.5 bg-overlay/[0.04] p-1.5 rounded-xl mb-4 shrink-0">
         {TABS.map((t) => (
           <button
             key={t}
@@ -53,7 +53,7 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
             className={`flex-1 py-2.5 text-[13px] font-semibold rounded-lg transition-all ${
               tab === t
                 ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_6px_18px_-6px_#7c5cff]"
-                : "text-muted hover:text-white"
+                : "text-muted hover:text-fg"
             }`}
           >
             {t}
@@ -73,9 +73,9 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
                 <h4 className="text-[12px] uppercase tracking-[0.08em] text-neon2 mb-2">
                   {s.heading}
                 </h4>
-                {s.body && <p className="text-[#cfd3f0]">{s.body}</p>}
+                {s.body && <p className="text-fg/80">{s.body}</p>}
                 {s.bullets && (
-                  <ul className="list-disc ml-5 text-[#d3d7f5] space-y-2">
+                  <ul className="list-disc ml-5 text-fg/80 space-y-2">
                     {s.bullets.map((b, j) => (
                       <li key={j}>{b}</li>
                     ))}
@@ -109,7 +109,7 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
             <h4 className="text-[12px] uppercase tracking-[0.08em] text-neon2 mb-2">
               Key Points &amp; Action Items
             </h4>
-            <ul className="list-disc ml-5 text-[#d3d7f5] space-y-2.5">
+            <ul className="list-disc ml-5 text-fg/80 space-y-2.5">
               {rec.key.map((k, i) => (
                 <li key={i}>{k}</li>
               ))}
@@ -118,7 +118,7 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
         )}
       </div>
 
-      <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-white/[0.08]">
+      <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-overlay/[0.08]">
         <button
           onClick={copy}
           className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-gradient-to-br from-neon to-neon2 text-white hover:-translate-y-0.5 transition-transform"
@@ -127,7 +127,7 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
         </button>
         <button
           onClick={download}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-white/[0.06] border border-white/10 hover:bg-white/[0.1] transition-colors"
+          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-overlay/[0.06] border border-overlay/10 hover:bg-overlay/[0.1] transition-colors"
         >
           <IconDownload className="w-4 h-4" /> Download
         </button>

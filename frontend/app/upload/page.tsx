@@ -227,9 +227,9 @@ export default function UploadPage() {
 
       <div className="grid flex-1 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
         {/* Input card */}
-        <div className="self-start rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="self-start rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           {/* mode switch */}
-          <div className="mb-6 flex gap-1.5 rounded-2xl bg-white/[0.04] p-1.5">
+          <div className="mb-6 flex gap-1.5 rounded-2xl bg-overlay/[0.04] p-1.5">
             {([
               { m: "upload" as const, label: "Upload file", Icon: IconUpload },
               { m: "record" as const, label: "Record & transcribe", Icon: IconMic },
@@ -241,7 +241,7 @@ export default function UploadPage() {
                 className={`flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-[13px] font-semibold transition-all disabled:cursor-not-allowed ${
                   mode === m
                     ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_6px_18px_-6px_#7c5cff]"
-                    : "text-muted hover:text-white"
+                    : "text-muted hover:text-fg"
                 }`}
               >
                 <Icon className="h-4 w-4" /> {label}
@@ -288,7 +288,7 @@ export default function UploadPage() {
           )}
 
           {/* expected speakers — optional hint for diarization */}
-          <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl bg-white/[0.03] px-4 py-3">
+          <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl bg-overlay/[0.03] px-4 py-3">
             <div className="min-w-0">
               <div className="text-[13px] font-semibold">Expected speakers</div>
               <div className="text-[11px] text-muted">
@@ -304,7 +304,7 @@ export default function UploadPage() {
               value={speakerCount}
               disabled={busy}
               onChange={(e) => setSpeakerCount(e.target.value)}
-              className="w-20 shrink-0 rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-center text-sm font-semibold text-white outline-none transition-colors focus:border-neon2 disabled:opacity-50"
+              className="w-20 shrink-0 rounded-xl border border-overlay/10 bg-overlay/[0.05] px-3 py-2 text-center text-sm font-semibold text-fg outline-none transition-colors focus:border-neon2 disabled:opacity-50"
             />
           </div>
 
@@ -334,7 +334,7 @@ export default function UploadPage() {
                   {stageLabel[stage]}
                 </div>
               </div>
-              <div className="h-2.5 rounded-full bg-white/[0.07] overflow-hidden">
+              <div className="h-2.5 rounded-full bg-overlay/[0.07] overflow-hidden">
                 <div
                   className="h-full rounded-full bg-[linear-gradient(90deg,#7c5cff,#00e5ff,#ff4ecd)] bg-[length:200%_100%] animate-flow transition-[width] duration-300"
                   style={{ width: `${stage === "done" ? 100 : pct}%` }}
@@ -351,7 +351,7 @@ export default function UploadPage() {
         </div>
 
         {/* Notes card */}
-        <div className="flex flex-col rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="flex flex-col rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           <h2 className="text-[15px] font-semibold mb-1">Generated Notes</h2>
           <p className="text-[12.5px] text-muted mb-5">
             Speaker-split transcript &amp; AI summary appear here once processing finishes.

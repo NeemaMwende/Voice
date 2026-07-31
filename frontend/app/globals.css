@@ -8,8 +8,10 @@
    `rgb(var(--neon) / <alpha-value>)` in tailwind.config.ts.
    The Settings page overwrites --neon/--neon2/--neon3 on :root at runtime.
 
-   Surfaces/text are stored as full color values and flipped by the
-   `data-theme` attribute on <html> for light/dark mode. */
+   Surfaces/text are flipped by the `data-theme` attribute on <html> for
+   light/dark mode. Channel-based tokens (--fg, --overlay, --bar) are stored as
+   space-separated RGB so Tailwind opacity modifiers (e.g. `text-fg/80`,
+   `bg-overlay/[0.05]`) keep working. */
 :root {
   /* accent (dark default: violet / cyan / pink) */
   --neon: 124 92 255;
@@ -21,7 +23,12 @@
   --bg-glow-1: #181a3a;
   --bg-glow-2: #2a1140;
   --panel: rgba(20, 22, 38, 0.72);
-  --fg: #e9ecff;
+  --bar: 10 11 19;
+  --fg: 233 236 255;
+  --muted: #8b90b5;
+  --overlay: 255 255 255;
+  --toast: rgba(20, 20, 40, 0.95);
+  --audio: #161829;
   --scrollbar: rgba(124, 92, 255, 0.4);
 }
 
@@ -32,7 +39,12 @@
   --bg-glow-1: #dfe3ff;
   --bg-glow-2: #f0e0ff;
   --panel: rgba(255, 255, 255, 0.75);
-  --fg: #1b1e30;
+  --bar: 255 255 255;
+  --fg: 27 30 48;
+  --muted: #565b7a;
+  --overlay: 21 24 42;
+  --toast: rgba(255, 255, 255, 0.95);
+  --audio: #eef0fb;
   --scrollbar: rgba(124, 92, 255, 0.45);
 }
 
@@ -41,7 +53,7 @@ body {
   min-height: 100%;
   background: radial-gradient(1200px 700px at 15% -10%, var(--bg-glow-1) 0%, transparent 55%),
     radial-gradient(1000px 600px at 100% 0%, var(--bg-glow-2) 0%, transparent 50%), var(--bg-base);
-  color: var(--fg);
+  color: rgb(var(--fg));
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -58,5 +70,5 @@ audio {
   filter: saturate(1.2);
 }
 audio::-webkit-media-controls-panel {
-  background: #161829;
+  background: var(--audio);
 }

@@ -15,10 +15,10 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="relative z-10 flex min-h-screen">
       {/* ── Mobile top bar (hidden on lg+) ── */}
-      <header className="fixed top-0 left-0 right-0 z-50 flex items-center gap-3 border-b border-white/[0.07] bg-black/90 backdrop-blur-xl px-4 py-3 lg:hidden">
+      <header className="fixed top-0 left-0 right-0 z-50 flex items-center gap-3 border-b border-overlay/[0.07] bg-bar/90 backdrop-blur-xl px-4 py-3 lg:hidden">
         <button
           onClick={() => setOpen((v) => !v)}
-          className="grid h-9 w-9 place-items-center rounded-xl text-white hover:bg-white/[0.08] transition-colors"
+          className="grid h-9 w-9 place-items-center rounded-xl text-fg hover:bg-overlay/[0.08] transition-colors"
           aria-label={open ? "Close menu" : "Open menu"}
         >
           {open ? <IconX className="w-5 h-5" /> : <IconMenu className="w-5 h-5" />}

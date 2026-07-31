@@ -28,8 +28,8 @@ export default function Sidebar({
       className={[
         // Base: fixed off-screen drawer on mobile
         "fixed inset-y-0 left-0 z-40 w-[248px]",
-        "flex flex-col border-r border-white/[0.07]",
-        "bg-black/20 backdrop-blur-xl p-5",
+        "flex flex-col border-r border-overlay/[0.07]",
+        "bg-bar/20 backdrop-blur-xl p-5",
         "transition-transform duration-300 ease-in-out",
         // Mobile: slide in/out
         open ? "translate-x-0" : "-translate-x-full",
@@ -58,13 +58,13 @@ export default function Sidebar({
               className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-medium transition-all ${
                 active
                   ? "bg-gradient-to-r from-neon/90 to-neon2/80 text-white shadow-[0_8px_24px_-8px_rgba(124,92,255,0.8)]"
-                  : "text-muted hover:text-white hover:bg-white/[0.05]"
+                  : "text-muted hover:text-fg hover:bg-overlay/[0.05]"
               }`}
             >
               <Icon className="w-[18px] h-[18px]" />
               <span>{label}</span>
               {href === "/recordings" && recordings.length > 0 && (
-                <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-white/15">
+                <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-overlay/15">
                   {recordings.length}
                 </span>
               )}
@@ -74,7 +74,7 @@ export default function Sidebar({
       </nav>
 
       <div className="mt-auto pt-6">
-        <div className="rounded-2xl border border-white/[0.08] p-4 bg-white/[0.03]">
+        <div className="rounded-2xl border border-overlay/[0.08] p-4 bg-overlay/[0.03]">
           <div className="text-xs font-semibold text-neon2 mb-1">Live pipeline</div>
           <p className="text-[11px] text-muted leading-relaxed">
             Upload or record, then Whisper transcribes and pyannote splits it by

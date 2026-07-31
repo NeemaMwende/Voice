@@ -69,7 +69,7 @@ export default function TranscriptView({
 
   // graceful fallback for any older records without diarized segments
   if (!rec.segments?.length) {
-    return <p className="whitespace-pre-wrap leading-7 text-[#cfd3f0]">{rec.transcript}</p>;
+    return <p className="whitespace-pre-wrap leading-7 text-fg/80">{rec.transcript}</p>;
   }
 
   return (
@@ -113,7 +113,7 @@ export default function TranscriptView({
                 >
                   {initials(sp.name)}
                 </button>
-                {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-white/10" />}
+                {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-overlay/10" />}
               </div>
 
               {/* bubble */}
@@ -144,8 +144,8 @@ export default function TranscriptView({
                 <div
                   className={`whitespace-pre-wrap rounded-2xl rounded-tl-md border px-4 py-2.5 text-[13.5px] leading-relaxed transition-all ${
                     isActive
-                      ? "border-neon2/40 bg-neon2/10 text-white"
-                      : "border-white/[0.06] bg-white/[0.03] text-[#dfe2fb]"
+                      ? "border-neon2/40 bg-neon2/10 text-fg"
+                      : "border-overlay/[0.06] bg-overlay/[0.03] text-fg/80"
                   }`}
                 >
                   {seg.clean}
