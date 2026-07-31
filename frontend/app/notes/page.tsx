@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
 import { fmtDuration } from "@/lib/notes";
@@ -11,19 +11,25 @@ import { IconNotes, IconUpload } from "@/components/icons";
 export default function NotesPage() {
   const { recordings, loading } = useApp();
   const [selected, setSelected] = useState<string | null>(null);
+  const deepLinked = useRef(false);
 
   // Open a specific recording's notes when linked as /notes?id=<id>.
   useEffect(() => {
+    if (deepLinked.current) return;
+    deepLinked.current = true;
     const id = new URLSearchParams(window.location.search).get("id");
     if (id) setSelected(id);
   }, []);
 
+  // Fall back to the newest recording when nothing valid is selected. The
+  // functional update matters: on a deep link both effects run in the same
+  // commit, and this must see the id the effect above just queued.
   useEffect(() => {
-    if (!selected && recordings.length) setSelected(recordings[0].id);
-    if (selected && !recordings.find((r) => r.id === selected)) {
-      setSelected(recordings[0]?.id ?? null);
-    }
-  }, [recordings, selected]);
+    if (!recordings.length) return;
+    setSelected((cur) =>
+      cur && recordings.some((r) => r.id === cur) ? cur : recordings[0].id
+    );
+  }, [recordings]);
 
   const active = recordings.find((r) => r.id === selected) ?? null;
 
@@ -56,13 +62,17 @@ export default function NotesPage() {
     );
   }
 
+  // h-, not just min-h-, on large screens: the notes panel scrolls internally
+  // via `flex-1 min-h-0 overflow-auto`, and that only works if an ancestor has
+  // a definite height. With min-h alone the card just grows and the whole page
+  // scrolls instead. Small screens keep the natural flow.
   return (
-    <div className="flex flex-col min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)]">
       <PageHeader title="Notes" subtitle="Every set of generated notes, in one place." />
 
       <div className="grid flex-1 min-h-0 grid-cols-1 items-stretch gap-6 lg:grid-cols-[300px_1fr]">
-        {/* list */}
-        <div className="space-y-2.5">
+        {/* list — scrolls on its own so a long library can't push the page */}
+        <div className="space-y-2.5 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           {recordings.map((r) => (
             <button
               key={r.id}

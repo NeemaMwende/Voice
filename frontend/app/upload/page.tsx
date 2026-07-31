@@ -1,22 +1,35 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp, Recording } from "@/context/AppContext";
-import { fmtSize, Speaker, Segment } from "@/lib/notes";
+import { fmtSize, NoteSection, SentenceSpan, Speaker, Segment } from "@/lib/notes";
 import { IconMic, IconUpload } from "@/components/icons";
 import NotesViewer from "@/components/NotesViewer";
 import LiveRecorder from "@/components/LiveRecorder";
 import PageHeader from "@/components/PageHeader";
 import { toast } from "@/components/Toast";
 
-type Stage = "idle" | "uploading" | "transcribing" | "analyzing" | "done";
+type Stage =
+  | "idle"
+  | "uploading"
+  | "transcribing"
+  | "diarizing"
+  | "naming"
+  | "analyzing"
+  | "done";
 type Mode = "upload" | "record";
 
 type TranscriptionSegment = {
   speaker: string;
   start: number;
   end: number;
+  /** verbatim — fillers, stutters and noise tags included */
   text: string;
+  /** the same turn de-noised; "" when the turn was nothing but filler */
+  clean?: string;
+  /** business content only, small talk removed */
+  relevant?: string;
+  sentences?: SentenceSpan[];
 };
 
 type TranscriptionResponse = {
@@ -26,8 +39,59 @@ type TranscriptionResponse = {
   duration: number | null;
   summary?: string | null;
   key_points?: string[];
+  action_items?: string[];
+  insights?: NoteSection[];
+  outline?: NoteSection[];
   audio_url?: string | null;
 };
+
+/** What GET /progress/<job_id> returns while a transcription is running. */
+type JobProgress = { pct: number; stage: string; label: string; done: boolean };
+
+const SERVER_STAGES: Record<string, Stage> = {
+  queued: "uploading",
+  uploading: "uploading",
+  transcribing: "transcribing",
+  diarizing: "diarizing",
+  naming: "naming",
+  analyzing: "analyzing",
+};
+
+/**
+ * POST the form over XHR rather than fetch — XHR is the only way to observe
+ * real upload byte progress, which is what drives the bar's first stretch.
+ */
+function postWithUploadProgress(
+  url: string,
+  form: FormData,
+  onProgress: (fraction: number) => void
+): Promise<TranscriptionResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.responseType = "json";
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.upload.onload = () => onProgress(1);
+
+    xhr.onload = () => {
+      const body = xhr.response;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as TranscriptionResponse);
+        return;
+      }
+      const detail =
+        typeof body?.detail === "string" ? body.detail : `Transcription failed (${xhr.status})`;
+      reject(new Error(detail));
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.onabort = () => reject(new Error("upload aborted"));
+
+    xhr.send(form);
+  });
+}
 
 const WAVE_BARS = Array.from({ length: 44 });
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
@@ -57,20 +121,24 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     color: SPEAKER_COLORS[i % SPEAKER_COLORS.length],
   }));
 
-  // backend returns cleaned text only, so raw === clean (no noise diff to show)
+  // Every tier comes from the backend: `text` is verbatim, `clean` drops the
+  // fillers, `relevant` additionally drops the small talk, and `sentences`
+  // records which is which. Older responses only had `text`, so fall back.
   const segments: Segment[] = response.segments.map((s) => ({
     speakerId: slugifySpeaker(s.speaker),
     tSec: s.start,
     raw: s.text.trim(),
-    clean: s.text.trim(),
+    clean: (s.clean ?? s.text).trim(),
+    relevant: s.relevant ?? undefined,
+    sentences: s.sentences?.length ? s.sentences : undefined,
   }));
 
-  // AI-generated key points (Ollama). Fall back to metadata if unavailable.
+  // AI-generated note sections (Ollama). Each is best-effort on the backend,
+  // so any of them can come back empty; the viewer just omits what's missing.
   const keyPoints = response.key_points?.filter(Boolean) ?? [];
-  const overview =
-    response.summary?.trim() ||
-    response.transcript ||
-    "No speech was detected in this recording.";
+  const actionItems = response.action_items?.filter(Boolean) ?? [];
+  const insights = response.insights?.filter((s) => s?.heading) ?? [];
+  const outline = response.outline?.filter((s) => s?.heading) ?? [];
 
   const metaFacts = [
     `Language: ${response.language || "unknown"}`,
@@ -80,19 +148,25 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     } turn${response.segments.length === 1 ? "" : "s"}`,
   ];
 
+  // The Notes tab never shows the raw transcription, so when the summarizer is
+  // unavailable we say so rather than dumping the transcript in as an overview.
+  const overview =
+    response.summary?.trim() ||
+    (response.transcript
+      ? "Summarization was unavailable for this recording — open the Transcript tab to read it in full."
+      : "No speech was detected in this recording.");
+
   return {
     id: crypto.randomUUID(),
     title,
     transcript: response.transcript || segments.map((s) => s.clean).join(" "),
     speakers,
     segments,
-    summary: [
-      { heading: "Overview", body: overview },
-      ...(keyPoints.length
-        ? [{ heading: "Key points", bullets: keyPoints }]
-        : []),
-    ],
+    summary: [{ heading: "Overview", body: overview }],
     key: keyPoints.length ? keyPoints : metaFacts,
+    actionItems,
+    insights,
+    outline,
     tags: ["Transcription", response.language || "Unknown language"],
     durationSec: Math.round(response.duration ?? src.durationSec ?? 0),
     fileName: src.name,
@@ -114,70 +188,79 @@ export default function UploadPage() {
   const [file, setFile] = useState<Source | null>(null);
   const [result, setResult] = useState<Recording | null>(null);
   const [speakerCount, setSpeakerCount] = useState<string>("");
+  const [detail, setDetail] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const busy = stage !== "idle" && stage !== "done";
+
+  const stopPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+  };
+  useEffect(() => stopPolling, []);
+
+  // The bar only ever moves forward: the upload fraction and the server's
+  // reported percent are two different sources, and a stalled poll shouldn't
+  // make it jump backwards.
+  const advance = (next: number) => setPct((prev) => Math.max(prev, Math.round(next)));
 
   // shared pipeline for both upload + live recording
   const process = async (src: Source) => {
     setFile(src);
     setResult(null);
     setPct(0);
+    setDetail("");
     setStage("uploading");
+
+    // The server reports progress for this id while it works; we poll it.
+    const jobId = crypto.randomUUID();
 
     try {
       // pull the blob back out of the object URL so we can POST the real bytes
       const blob = await fetch(src.url).then((r) => r.blob());
       const form = new FormData();
       form.append("file", blob, src.name);
+      form.append("job_id", jobId);
       // Tell diarization the exact speaker count when the user knows it — stops
       // pyannote from over-splitting one voice into many phantom speakers.
-      const n = parseInt(speakerCount, 10);
+      const n = Number.parseInt(speakerCount, 10);
       if (Number.isFinite(n) && n > 0) form.append("num_speakers", String(n));
 
-      setStage("transcribing");
-      setPct(2);
-
-      // Submit — backend returns a progress_id immediately
-      const submitRes = await fetch(`${API_URL}/transcribe`, { method: "POST", body: form });
-      if (!submitRes.ok) {
-        const errorBody = await submitRes.json().catch(() => null);
-        const detail =
-          typeof errorBody?.detail === "string"
-            ? errorBody.detail
-            : `Transcription failed (${submitRes.status})`;
-        throw new Error(detail);
-      }
-
-      const { progress_id } = await submitRes.json();
-
-      // Poll progress every 500ms
-      const poll = setInterval(async () => {
+      // Sending the bytes is the first 10% of the bar; the server owns the rest.
+      stopPolling();
+      pollRef.current = setInterval(async () => {
         try {
-          const res = await fetch(`${API_URL}/transcribe/progress/${progress_id}`);
-          const data = await res.json();
-          if (data.status === "error") {
-            clearInterval(poll);
-            throw new Error(data.error || "Transcription failed");
-          }
-          setPct(data.pct);
-          if (data.status === "complete" && data.result) {
-            clearInterval(poll);
-            setStage("analyzing");
-            setPct(100);
-            const transcription: TranscriptionResponse = data.result;
-            const rec = recordingFromResponse(transcription, src);
-            setResult(rec);
-            addRecording(rec);
-            setStage("done");
-            toast("Transcription complete");
-          }
-        } catch (err) {
-          clearInterval(poll);
-          throw err;
+          const res = await fetch(`${API_URL}/progress/${jobId}`);
+          if (!res.ok) return;
+          const p: JobProgress = await res.json();
+          if (p.stage === "unknown") return;
+          advance(p.pct);
+          setDetail(p.label ?? "");
+          const mapped = SERVER_STAGES[p.stage];
+          if (mapped) setStage(mapped);
+        } catch {
+          // a dropped poll is harmless — the next tick catches up
         }
-      }, 500);
+      }, 700);
+
+      const transcription = await postWithUploadProgress(
+        `${API_URL}/transcribe`,
+        form,
+        (fraction) => advance(fraction * 10)
+      );
+
+      stopPolling();
+      const rec = recordingFromResponse(transcription, src);
+      setResult(rec);
+      addRecording(rec);
+      setPct(100);
+      setDetail("");
+      setStage("done");
+      toast("Transcription complete");
     } catch (error) {
+      stopPolling();
       setStage("idle");
       setPct(0);
+      setDetail("");
       toast(
         error instanceof Error && error.message.startsWith("Transcription failed")
           ? error.message
@@ -200,6 +283,8 @@ export default function UploadPage() {
     idle: "",
     uploading: mode === "record" ? "Capturing…" : "Uploading…",
     transcribing: "Transcribing…",
+    diarizing: "Separating speakers…",
+    naming: "Identifying speakers…",
     analyzing: "Preparing notes…",
     done: "✓ Complete",
   };
@@ -207,20 +292,22 @@ export default function UploadPage() {
     idle: "",
     uploading: mode === "record" ? "captured" : "uploaded",
     transcribing: "transcribed",
+    diarizing: "diarized",
+    naming: "matched",
     analyzing: "analyzed",
     done: "done",
   };
 
   return (
-    <div className="flex flex-col min-h-[calc(100vh-4rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)]">
       <PageHeader
         title="Capture & Transcribe"
         subtitle="Upload a file or record live — we transcribe it, split it by speaker, and pull out the key notes."
       />
 
-      <div className="grid flex-1 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
-        {/* Input card */}
-        <div className="self-start rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+      <div className="grid flex-1 min-h-0 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
+        {/* Input card — scrolls if the controls outgrow a short window */}
+        <div className="self-start rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7 lg:max-h-full lg:overflow-y-auto">
           {/* mode switch */}
           <div className="mb-6 flex gap-1.5 rounded-2xl bg-white/[0.04] p-1.5">
             {([
@@ -302,7 +389,7 @@ export default function UploadPage() {
           </div>
 
           {/* waveform */}
-          <div className={`flex items-center justify-center gap-1 overflow-hidden transition-all ${stage === "transcribing" ? "h-[54px] mt-5" : "h-0"}`}>
+          <div className={`flex items-center justify-center gap-1 overflow-hidden transition-all ${busy && stage !== "uploading" ? "h-[54px] mt-5" : "h-0"}`}>
             {WAVE_BARS.map((_, i) => (
               <span
                 key={i}
@@ -333,8 +420,11 @@ export default function UploadPage() {
                   style={{ width: `${stage === "done" ? 100 : pct}%` }}
                 />
               </div>
-              <div className="mt-1.5 text-right text-[11.5px] text-muted">
-                {stage === "done" ? "100% · done" : `${pct}% ${pctLabel[stage]}`}
+              <div className="mt-1.5 flex items-center justify-between gap-3 text-[11.5px] text-muted">
+                <span className="truncate">{stage === "done" ? "" : detail}</span>
+                <span className="shrink-0">
+                  {stage === "done" ? "100% · done" : `${pct}% ${pctLabel[stage]}`}
+                </span>
               </div>
               {file.url && stage !== "idle" && (
                 <audio src={file.url} controls className="mt-4 w-full rounded-xl" />

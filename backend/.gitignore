@@ -2,3 +2,24 @@ venv
 .env
 media
 __pycache__
+
+# Python
+backend/venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment
+.env
+backend/.env
+
+# Runtime data
+backend/media/
+
+# Node / Next.js
+node_modules/
+.next/
+
+# TypeScript build info
+*.tsbuildinfo

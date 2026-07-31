@@ -28,8 +28,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
+import cleaning
 import diarization
+import progress
+import relevance
 import summarization
+import vad
 import db
 
 # When one speaker holds the floor, keep their words in a single block instead
@@ -79,6 +83,20 @@ BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
 USE_VAD = os.environ.get("WHISPER_VAD", "0") in ("1", "true", "True")
 CPU_THREADS = int(os.environ.get("WHISPER_THREADS", "0"))
 
+# Left alone, Whisper "tidies up" as it transcribes: it silently drops "uhh",
+# "hmm" and stutters because its training transcripts were written that way.
+# The Transcript tab wants the opposite — a genuinely verbatim record it can
+# diff against the cleaned version — and priming it with a disfluent sample
+# is what makes it write the fillers down. Set WHISPER_VERBATIM=0 to disable.
+VERBATIM = os.environ.get("WHISPER_VERBATIM", "1") in ("1", "true", "True")
+VERBATIM_PROMPT = os.environ.get(
+    "WHISPER_VERBATIM_PROMPT",
+    "Umm, so, like, I was, uh, thinking — you know — that we, we should, "
+    "hmm, probably just, er, write down every single word exactly as it's "
+    "said, uhh, including all the filler words and false starts.",
+)
+INITIAL_PROMPT = VERBATIM_PROMPT if VERBATIM else None
+
 model = WhisperModel(
     MODEL_NAME,
     device=DEVICE,
@@ -91,11 +109,35 @@ _progress_store: Dict[str, dict] = {}
 _inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
+class SentenceSpan(BaseModel):
+    """One sentence of a turn, in all three of its forms."""
+
+    raw: str
+    clean: str = ""
+    # "business" (keep) or "smalltalk" (set aside) — see relevance.py.
+    label: str = "business"
+    # Why it was set aside; only present on small talk.
+    reason: str = ""
+
+
 class SpeakerSegment(BaseModel):
     speaker: str
     start: float
     end: float
+    # Verbatim, exactly as spoken — fillers, stutters and noise tags included.
     text: str
+    # Same turn with lexical noise stripped, but every topic still present.
+    clean: str = ""
+    # Business content only: cleaned, minus the small talk. This is the text an
+    # SOP would be written from. Empty when the whole turn was incidental.
+    relevant: str = ""
+    # Per-sentence breakdown backing the transcript's two-colour strikethrough.
+    sentences: List[SentenceSpan] = []
+
+
+class NoteSection(BaseModel):
+    heading: str
+    bullets: List[str] = []
 
 
 class TranscriptionResponse(BaseModel):
@@ -105,6 +147,9 @@ class TranscriptionResponse(BaseModel):
     duration: Optional[float] = None
     summary: Optional[str] = None
     key_points: List[str] = []
+    action_items: List[str] = []
+    insights: List[NoteSection] = []
+    outline: List[NoteSection] = []
     audio_url: Optional[str] = None
 
 
@@ -122,8 +167,17 @@ def save_upload(upload_file: UploadFile) -> tuple[str, str]:
     return str(dest), f"/media/{media_name}"
 
 
-def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
-    """Collect word-level timings; fall back to segment-level if unavailable."""
+def identity_time(seconds: float, *, is_end: bool = False) -> float:
+    """No-op timeline mapping, used when the VAD pre-pass didn't run."""
+    return float(seconds)
+
+
+def flatten_words(raw_segments: List[Any], to_original=identity_time) -> List[Dict[str, Any]]:
+    """Collect word-level timings; fall back to segment-level if unavailable.
+
+    ``to_original`` converts Whisper's timestamps — which are relative to the
+    silence-stripped audio it was given — back onto the real recording.
+    """
     words: List[Dict[str, Any]] = []
     for segment in raw_segments:
         seg_words = getattr(segment, "words", None)
@@ -134,8 +188,10 @@ def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
                     continue
                 words.append(
                     {
-                        "start": float(getattr(word, "start", 0.0) or 0.0),
-                        "end": float(getattr(word, "end", 0.0) or 0.0),
+                        "start": to_original(float(getattr(word, "start", 0.0) or 0.0)),
+                        "end": to_original(
+                            float(getattr(word, "end", 0.0) or 0.0), is_end=True
+                        ),
                         "text": text,
                     }
                 )
@@ -144,8 +200,10 @@ def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
             if text:
                 words.append(
                     {
-                        "start": float(getattr(segment, "start", 0.0) or 0.0),
-                        "end": float(getattr(segment, "end", 0.0) or 0.0),
+                        "start": to_original(float(getattr(segment, "start", 0.0) or 0.0)),
+                        "end": to_original(
+                            float(getattr(segment, "end", 0.0) or 0.0), is_end=True
+                        ),
                         "text": text,
                     }
                 )
@@ -238,7 +296,9 @@ def consolidate_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return consolidated
 
 
-def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, Any]]:
+def build_default_speaker_segments(
+    raw_segments: List[Any], to_original=identity_time
+) -> List[Dict[str, Any]]:
     """Fallback used when diarization is unavailable.
 
     Without diarization we genuinely cannot tell voices apart from the audio, so
@@ -256,12 +316,62 @@ def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, An
         result.append(
             {
                 "speaker": "Speaker 1",
-                "start": start,
-                "end": end,
+                "start": to_original(start),
+                "end": to_original(end, is_end=True),
                 "text": text,
             }
         )
     return result
+
+
+def labeled_transcript(segments: List[Dict[str, Any]], *, tier: str = "clean") -> str:
+    """``Speaker 1: …`` transcript at the requested cleanliness tier.
+
+    ``tier="clean"`` keeps every topic with the lexical noise removed;
+    ``tier="relevant"`` additionally drops the small talk. A turn that reduces
+    to nothing at the requested tier is omitted entirely rather than emitted as
+    a bare speaker label.
+    """
+    lines = []
+    for seg in segments:
+        # A missing key means that stage never ran, so fall back a tier. An
+        # empty value is a real answer — the turn had nothing at this tier.
+        if tier == "relevant" and "relevant" in seg:
+            text = seg["relevant"]
+        elif "clean" in seg:
+            text = seg["clean"]
+        else:
+            text = seg["text"]
+        if text.strip():
+            lines.append(f"{seg['speaker']}: {text}")
+    return "\n\n".join(lines)
+
+
+def apply_speaker_names(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rename ``Speaker N`` labels to real names when the talk reveals them.
+
+    People introduce themselves and address each other by name, so a diarized
+    transcript usually carries enough to label the voices properly. Anyone whose
+    name is never said keeps their ``Speaker N`` fallback.
+    """
+    labels: List[str] = []
+    for seg in segments:
+        if seg["speaker"] not in labels:
+            labels.append(seg["speaker"])
+    if not labels:
+        return segments
+
+    try:
+        names = summarization.identify_speakers(labeled_transcript(segments), labels)
+    except Exception as exc:  # noqa: BLE001 - naming is a nicety, never fatal
+        print(f"[speakers] name detection failed: {exc}")
+        return segments
+
+    if names:
+        print(f"[speakers] resolved {names}")
+    for seg in segments:
+        seg["speaker"] = names.get(seg["speaker"], seg["speaker"])
+    return segments
 
 
 @app.get("/health")
@@ -272,111 +382,182 @@ def health():
         "device": DEVICE,
         "diarization_available": diarization.is_available(),
         "diarization_note": diarization.unavailable_reason(),
+        "silero_vad": vad.ENABLED,
+        "verbatim_prompt": VERBATIM,
+        "relevance_filter": relevance.ENABLED,
+        "relevance_model": relevance.MODEL,
     }
 
 
-def _transcribe_with_progress(
-    audio_path: str,
-    num_speakers: Optional[int],
-    audio_url: str,
-    progress_id: str,
-) -> Optional[Dict[str, Any]]:
-    """Run full transcription pipeline in a background thread, reporting progress."""
-    try:
-        _progress_store[progress_id] = {"pct": 1, "status": "transcribing"}
-
-        segments, info = model.transcribe(
-            audio_path,
-            beam_size=BEAM_SIZE,
-            language=LANGUAGE,
-            condition_on_previous_text=False,
-            word_timestamps=True,
-            vad_filter=USE_VAD,
-        )
-        raw_segments: list[Any] = []
-        for seg in segments:
-            raw_segments.append(seg)
-            total = max(float(info.duration) if hasattr(info, "duration") and info.duration else 1.0, float(seg.end))
-            pct = min(int(seg.end / total * 100), 99)
-            _progress_store[progress_id] = {"pct": pct, "status": "transcribing"}
-
-        transcript = " ".join(
-            getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
-        ).strip()
-
-        # Diarize + merge; fall back to single-speaker grouping if unavailable.
-        try:
-            turns = diarization.diarize(audio_path, num_speakers=num_speakers)
-        except diarization.DiarizationUnavailable as exc:
-            print(f"[diarization] unavailable: {exc}")
-            turns = []
-
-        if turns:
-            words = flatten_words(raw_segments)
-            speaker_segments = merge_words_with_speakers(words, turns)
-        else:
-            speaker_segments = build_default_speaker_segments(raw_segments)
-
-        speaker_segments = consolidate_segments(speaker_segments)
-
-        # Summarize (best-effort).
-        summary_text: Optional[str] = None
-        key_points: List[str] = []
-        try:
-            result = summarization.summarize(transcript)
-            summary_text = result["summary"] or None
-            key_points = result["key_points"]
-        except summarization.SummaryUnavailable as exc:
-            print(f"[summarization] unavailable: {exc}")
-
-        response = TranscriptionResponse(
-            transcript=transcript,
-            segments=[SpeakerSegment(**segment) for segment in speaker_segments],
-            language=getattr(info, "language", "unknown"),
-            duration=float(getattr(info, "duration", 0.0)) if hasattr(info, "duration") and info.duration else None,
-            summary=summary_text,
-            key_points=key_points,
-            audio_url=audio_url,
-        )
-
-        _progress_store[progress_id] = {"pct": 100, "status": "complete", "result": response.model_dump()}
-        return None
-    except Exception as exc:
-        _progress_store[progress_id] = {"pct": 0, "status": "error", "error": str(exc)}
-        return None
+@app.get("/progress/{job_id}")
+def transcription_progress(job_id: str) -> Dict[str, Any]:
+    """Live progress for an in-flight /transcribe call. See progress.py."""
+    return progress.get(job_id)
 
 
-@app.post("/transcribe")
-async def transcribe(
+# Defined with `def` (not `async def`) on purpose: the work below is blocking
+# CPU work, so FastAPI runs it in a worker thread and the /progress endpoint
+# stays responsive while a transcription is underway.
+@app.post("/transcribe", response_model=TranscriptionResponse)
+def transcribe(
     file: UploadFile = File(...),
     num_speakers: Optional[int] = Form(None),
+    job_id: Optional[str] = Form(None),
 ):
     if not (file.content_type or "").startswith("audio/"):
         raise HTTPException(status_code=400, detail="Upload a valid audio file.")
 
-    audio_path, audio_url = save_upload(file)
-    progress_id = str(uuid.uuid4())
-    _progress_store[progress_id] = {"pct": 0, "status": "queued"}
+    progress.start(job_id)
+    try:
+        return _run_transcription(file, num_speakers, job_id)
+    except Exception:
+        progress.finish(job_id, failed=True)
+        raise
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(
-        _inference_executor,
-        _transcribe_with_progress,
-        audio_path,
-        num_speakers,
-        audio_url,
-        progress_id,
+
+def _run_transcription(
+    file: UploadFile, num_speakers: Optional[int], job_id: Optional[str]
+) -> TranscriptionResponse:
+    audio_path, audio_url = save_upload(file)
+    progress.update(job_id, 8, "uploading", "Saving audio")
+
+    # Silero VAD pre-pass: decode once, then cut the silence out so Whisper and
+    # pyannote only ever process speech. Both stages cost time proportional to
+    # the audio they're handed, so this is where the runtime saving comes from.
+    # `speech` is None when the pre-pass is off or found nothing — in that case
+    # everything below falls back to the full audio, unchanged.
+    full_audio = vad.decode(audio_path)
+    original_duration = len(full_audio) / vad.SAMPLE_RATE
+    progress.update(job_id, 12, "uploading", "Detecting speech")
+    speech = vad.trim_silence(full_audio)
+
+    if speech is not None:
+        print(
+            f"[vad] kept {speech.speech_duration:.1f}s of {speech.original_duration:.1f}s "
+            f"({speech.kept_ratio:.0%}) across {len(speech.chunks)} chunks; "
+            f"skipped {speech.removed_duration:.1f}s of silence"
+        )
+    whisper_audio = speech.audio if speech is not None else full_audio
+    to_original = speech.to_original if speech is not None else identity_time
+
+    segments, info = model.transcribe(
+        whisper_audio,
+        beam_size=BEAM_SIZE,
+        language=LANGUAGE,
+        condition_on_previous_text=False,
+        word_timestamps=True,
+        # Silero already removed the silence; re-running Whisper's own VAD over
+        # the trimmed audio would only risk trimming speech twice.
+        vad_filter=USE_VAD and speech is None,
+        initial_prompt=INITIAL_PROMPT,
     )
+
+    # faster-whisper streams segments lazily, so draining the generator here
+    # gives us genuine transcription progress: how far into the audio we are.
+    # This denominator is the *trimmed* length, which is the timeline Whisper's
+    # own timestamps use.
+    total_sec = float(getattr(info, "duration", 0.0) or 0.0)
+    raw_segments = []
+    for segment in segments:
+        raw_segments.append(segment)
+        if total_sec > 0:
+            done = min(1.0, float(getattr(segment, "end", 0.0) or 0.0) / total_sec)
+            progress.update(job_id, 15 + 45 * done, "transcribing", "Transcribing audio")
 
     return {"progress_id": progress_id}
 
+    # Diarize + merge; fall back to single-speaker grouping if unavailable.
+    # pyannote gets the same silence-stripped waveform Whisper did, so its turns
+    # come back on the trimmed timeline and need the same mapping.
+    progress.update(job_id, 62, "diarizing", "Separating speakers")
+    try:
+        turns = diarization.diarize(
+            audio_path,
+            num_speakers=num_speakers,
+            waveform=speech.audio if speech is not None else None,
+        )
+    except diarization.DiarizationUnavailable as exc:
+        print(f"[diarization] unavailable: {exc}")
+        turns = []
 
-@app.get("/transcribe/progress/{progress_id}")
-async def get_progress(progress_id: str):
-    entry = _progress_store.get(progress_id)
-    if entry is None:
-        return {"pct": 0, "status": "unknown"}
-    return entry
+    for turn in turns:
+        turn["start"] = to_original(float(turn["start"]))
+        turn["end"] = to_original(float(turn["end"]), is_end=True)
+
+    if turns:
+        words = flatten_words(raw_segments, to_original)
+        speaker_segments = merge_words_with_speakers(words, turns)
+    else:
+        speaker_segments = build_default_speaker_segments(raw_segments, to_original)
+
+    # Collapse consecutive same-speaker turns into one consolidated block, then
+    # split each into sentences carrying their own verbatim/cleaned pair.
+    speaker_segments = consolidate_segments(speaker_segments)
+    speaker_segments = cleaning.annotate_segments(speaker_segments)
+
+    # Swap Speaker 1/2 for real names wherever the conversation reveals them.
+    progress.update(job_id, 72, "naming", "Identifying speakers")
+    speaker_segments = apply_speaker_names(speaker_segments)
+
+    # Set the small talk aside. Nothing is deleted — sentences are only
+    # labelled, so the transcript can still show exactly what was excluded.
+    progress.update(job_id, 76, "filtering", "Separating business discussion")
+    speaker_segments = relevance.label_segments(
+        speaker_segments,
+        on_progress=lambda frac: progress.update(
+            job_id, 76 + 4 * frac, "filtering", "Separating business discussion"
+        ),
+    )
+    tally = relevance.counts(speaker_segments)
+    print(
+        f"[relevance] {tally['smalltalk']} of {tally['total']} sentences "
+        f"set aside as small talk"
+    )
+
+    # Summarize into the full note set (best-effort; never fatal). Notes are
+    # built from the business-only tier — small talk would otherwise show up as
+    # "action items" — and stay speaker-labelled so they can attribute by name.
+    progress.update(job_id, 80, "analyzing", "Writing notes")
+    notes_source = (
+        labeled_transcript(speaker_segments, tier="relevant")
+        or labeled_transcript(speaker_segments)
+        or transcript
+    )
+    summary_text: Optional[str] = None
+    key_points: List[str] = []
+    action_items: List[str] = []
+    insights: List[Dict[str, Any]] = []
+    outline: List[Dict[str, Any]] = []
+    try:
+        result = summarization.summarize(
+            notes_source,
+            on_progress=lambda frac, label: progress.update(
+                job_id, 80 + 18 * frac, "analyzing", label
+            ),
+        )
+        summary_text = result["summary"] or None
+        key_points = result["key_points"]
+        action_items = result["action_items"]
+        insights = result["insights"]
+        outline = result["outline"]
+    except summarization.SummaryUnavailable as exc:
+        print(f"[summarization] unavailable: {exc}")
+
+    progress.finish(job_id)
+    return TranscriptionResponse(
+        transcript=transcript,
+        segments=[SpeakerSegment(**segment) for segment in speaker_segments],
+        language=getattr(info, "language", "unknown"),
+        # The real recording's length, not the trimmed one Whisper saw — this
+        # drives playback length and the "minutes transcribed" stat.
+        duration=original_duration,
+        summary=summary_text,
+        key_points=key_points,
+        action_items=action_items,
+        insights=[NoteSection(**section) for section in insights],
+        outline=[NoteSection(**section) for section in outline],
+        audio_url=audio_url,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,10 @@ const config: Config = {
         neon2: "#00e5ff",
         neon3: "#ff4ecd",
         ok: "#2ee6a6",
+        // off-topic / small-talk marker in the transcript — deliberately a
+        // different hue from neon3 (fillers) so the two kinds of removal are
+        // distinguishable at a glance.
+        warn: "#ffb454",
         muted: "#8b90b5",
       },
       boxShadow: {
