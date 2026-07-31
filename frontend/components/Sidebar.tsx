@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { IconGrid, IconUpload, IconWave, IconNotes, IconMic } from "./icons";
+import { IconGrid, IconUpload, IconWave, IconNotes, IconMic, IconSettings } from "./icons";
 import { useApp } from "@/context/AppContext";
 
 const nav = [
@@ -10,14 +10,33 @@ const nav = [
   { href: "/upload", label: "Capture & Transcribe", Icon: IconUpload },
   { href: "/recordings", label: "Recordings", Icon: IconWave },
   { href: "/notes", label: "Notes", Icon: IconNotes },
+  { href: "/settings", label: "Settings", Icon: IconSettings },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const pathname = usePathname();
   const { recordings } = useApp();
 
   return (
-    <aside className="w-[248px] shrink-0 border-r border-white/[0.07] bg-black/20 backdrop-blur-xl p-5 flex flex-col min-h-screen sticky top-0">
+    <aside
+      className={[
+        // Base: fixed off-screen drawer on mobile
+        "fixed inset-y-0 left-0 z-40 w-[248px]",
+        "flex flex-col border-r border-white/[0.07]",
+        "bg-black/20 backdrop-blur-xl p-5",
+        "transition-transform duration-300 ease-in-out",
+        // Mobile: slide in/out
+        open ? "translate-x-0" : "-translate-x-full",
+        // Desktop (lg+): sticky, always visible, no transition
+        "lg:sticky lg:translate-x-0 lg:transition-none",
+      ].join(" ")}
+    >
       <div className="flex items-center gap-3 mb-9 px-1">
         <div className="w-11 h-11 rounded-2xl grid place-items-center bg-gradient-to-br from-neon to-neon2 shadow-[0_0_24px_rgba(124,92,255,0.6)]">
           <IconMic className="w-6 h-6 text-white" />
@@ -35,6 +54,7 @@ export default function Sidebar() {
             <Link
               key={href}
               href={href}
+              onClick={onClose}
               className={`flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-medium transition-all ${
                 active
                   ? "bg-gradient-to-r from-neon/90 to-neon2/80 text-white shadow-[0_8px_24px_-8px_rgba(124,92,255,0.8)]"

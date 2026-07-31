@@ -14,6 +14,7 @@ os.environ["MKL_THREADING_LAYER"] = "sequential"
 
 import asyncio
 import concurrent.futures
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -304,6 +305,9 @@ def _transcribe_with_progress(
             getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
         ).strip()
 
+        # Emit phase transition so the frontend can show "Identifying speakers…"
+        _progress_store[progress_id] = {"pct": 99, "status": "diarizing"}
+
         # Diarize + merge; fall back to single-speaker grouping if unavailable.
         try:
             turns = diarization.diarize(audio_path, num_speakers=num_speakers)
@@ -318,6 +322,9 @@ def _transcribe_with_progress(
             speaker_segments = build_default_speaker_segments(raw_segments)
 
         speaker_segments = consolidate_segments(speaker_segments)
+
+        # Emit phase transition so the frontend can show "Summarizing…"
+        _progress_store[progress_id] = {"pct": 99, "status": "summarizing"}
 
         # Summarize (best-effort).
         summary_text: Optional[str] = None
@@ -340,9 +347,13 @@ def _transcribe_with_progress(
         )
 
         _progress_store[progress_id] = {"pct": 100, "status": "complete", "result": response.model_dump()}
+        # TTL eviction: clean up 5 minutes after completion (safer than delete-on-read
+        # which races under React StrictMode or concurrent poll calls)
+        threading.Timer(300, _progress_store.pop, args=[progress_id, None]).start()
         return None
     except Exception as exc:
         _progress_store[progress_id] = {"pct": 0, "status": "error", "error": str(exc)}
+        threading.Timer(300, _progress_store.pop, args=[progress_id, None]).start()
         return None
 
 

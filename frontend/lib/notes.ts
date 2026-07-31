@@ -11,6 +11,8 @@ export type Segment = {
   speakerId: string;
   /** start offset in seconds */
   tSec: number;
+  /** end offset in seconds (for playback highlighting & seeking) */
+  endSec?: number;
   /** exactly what was said — fillers, stutters, background noise */
   raw: string;
   /** the same turn after noise + filler removal */
@@ -30,13 +32,6 @@ export type NoteContent = {
 };
 
 export function fmtDuration(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-/** mm:ss timestamp for a transcript segment */
-export function fmtStamp(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;

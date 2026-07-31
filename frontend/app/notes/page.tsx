@@ -9,7 +9,7 @@ import NotesViewer from "@/components/NotesViewer";
 import { IconNotes, IconUpload } from "@/components/icons";
 
 export default function NotesPage() {
-  const { recordings, loading } = useApp();
+  const { recordings, loading, addRecording } = useApp();
   const [selected, setSelected] = useState<string | null>(null);
 
   // Open a specific recording's notes when linked as /notes?id=<id>.
@@ -96,9 +96,8 @@ export default function NotesPage() {
                 <h2 className="text-[17px] font-bold">{active.title}</h2>
                 <p className="text-[12px] text-muted mt-0.5">{active.fileName}</p>
               </div>
-              {active.audioUrl && <audio src={active.audioUrl} controls className="mb-5 w-full rounded-xl shrink-0" />}
               <div className="min-h-0 flex-1">
-                <NotesViewer key={active.id} rec={active} />
+                <NotesViewer key={active.id} rec={active} audioUrl={active.audioUrl} onRecChange={(updated) => addRecording(updated)} />
               </div>
             </>
           )}

@@ -210,9 +210,9 @@ export default function LiveRecorder({
 
         {!live && (
           <>
-            <div className="text-lg font-semibold mb-1">Record live audio</div>
+            <div className="text-lg font-semibold mb-1">Record audio</div>
             <div className="text-[13px] text-muted mb-6 text-center">
-              Capture straight from your microphone — we transcribe as you talk.
+              Capture straight from your microphone — we transcribe it when you stop.
             </div>
             <button
               onClick={start}

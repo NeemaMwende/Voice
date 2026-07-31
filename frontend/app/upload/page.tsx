@@ -61,6 +61,7 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
   const segments: Segment[] = response.segments.map((s) => ({
     speakerId: slugifySpeaker(s.speaker),
     tSec: s.start,
+    endSec: s.end,
     raw: s.text.trim(),
     clean: s.text.trim(),
   }));
@@ -111,6 +112,7 @@ export default function UploadPage() {
   const [drag, setDrag] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
   const [pct, setPct] = useState(0);
+  const [phase, setPhase] = useState<string>("");
   const [file, setFile] = useState<Source | null>(null);
   const [result, setResult] = useState<Recording | null>(null);
   const [speakerCount, setSpeakerCount] = useState<string>("");
@@ -159,6 +161,11 @@ export default function UploadPage() {
             throw new Error(data.error || "Transcription failed");
           }
           setPct(data.pct);
+          if (data.status === "diarizing") {
+            setPhase("Identifying speakers…");
+          } else if (data.status === "summarizing") {
+            setPhase("Summarizing…");
+          }
           if (data.status === "complete" && data.result) {
             clearInterval(poll);
             setStage("analyzing");
@@ -215,7 +222,7 @@ export default function UploadPage() {
     <div className="flex flex-col min-h-[calc(100vh-4rem)]">
       <PageHeader
         title="Capture & Transcribe"
-        subtitle="Upload a file or record live — we transcribe it, split it by speaker, and pull out the key notes."
+        subtitle="Upload a file or record audio — we transcribe it, split it by speaker, and pull out the key notes."
       />
 
       <div className="grid flex-1 grid-cols-1 items-stretch gap-6 lg:grid-cols-[520px_1fr]">
@@ -225,7 +232,7 @@ export default function UploadPage() {
           <div className="mb-6 flex gap-1.5 rounded-2xl bg-white/[0.04] p-1.5">
             {([
               { m: "upload" as const, label: "Upload file", Icon: IconUpload },
-              { m: "record" as const, label: "Record live", Icon: IconMic },
+              { m: "record" as const, label: "Record & transcribe", Icon: IconMic },
             ]).map(({ m, label, Icon }) => (
               <button
                 key={m}
@@ -334,9 +341,9 @@ export default function UploadPage() {
                 />
               </div>
               <div className="mt-1.5 text-right text-[11.5px] text-muted">
-                {stage === "done" ? "100% · done" : `${pct}% ${pctLabel[stage]}`}
+                {stage === "done" ? "100% · done" : phase || `${pct}% ${pctLabel[stage]}`}
               </div>
-              {file.url && stage !== "idle" && (
+              {file.url && stage !== "idle" && stage !== "done" && (
                 <audio src={file.url} controls className="mt-4 w-full rounded-xl" />
               )}
             </div>
@@ -351,7 +358,14 @@ export default function UploadPage() {
           </p>
           {result ? (
             <div className="min-h-0 flex-1">
-              <NotesViewer rec={result} />
+              <NotesViewer
+                rec={result}
+                audioUrl={file!.url}
+                onRecChange={(updated) => {
+                  setResult(updated);
+                  addRecording(updated);
+                }}
+              />
             </div>
           ) : (
             <div className="grid flex-1 place-items-center text-center text-muted text-[13px]">

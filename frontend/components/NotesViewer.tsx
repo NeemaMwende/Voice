@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Recording } from "@/context/AppContext";
 import { IconCopy, IconDownload } from "./icons";
 import { toast } from "./Toast";
@@ -8,8 +8,9 @@ import TranscriptView from "./TranscriptView";
 
 const TABS = ["Notes", "Transcript", "Key Points"] as const;
 
-export default function NotesViewer({ rec }: { rec: Recording }) {
+export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recording; audioUrl?: string; onRecChange?: (updated: Recording) => void }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Notes");
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const plain = () =>
     [
@@ -60,6 +61,10 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
         ))}
       </div>
 
+      {audioUrl && (
+        <audio ref={audioRef} src={audioUrl} controls className="mb-4 w-full rounded-xl shrink-0" />
+      )}
+
       <div className="flex-1 min-h-0 overflow-auto pr-2 text-[15px] leading-7">
         {tab === "Notes" && (
           <div>
@@ -91,7 +96,13 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
           </div>
         )}
 
-        {tab === "Transcript" && <TranscriptView rec={rec} />}
+        {tab === "Transcript" && (
+          <TranscriptView
+            rec={rec}
+            audioRef={audioRef}
+            onSpeakersChange={(speakers) => onRecChange?.({ ...rec, speakers })}
+          />
+        )}
 
         {tab === "Key Points" && (
           <div>

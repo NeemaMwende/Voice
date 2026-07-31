@@ -2,12 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme variables ──────────────────────────────────────────────
+   Accent colors are stored as space-separated RGB channels so Tailwind's
+   opacity modifiers (e.g. `bg-neon2/10`) keep working via
+   `rgb(var(--neon) / <alpha-value>)` in tailwind.config.ts.
+   The Settings page overwrites --neon/--neon2/--neon3 on :root at runtime.
+
+   Surfaces/text are stored as full color values and flipped by the
+   `data-theme` attribute on <html> for light/dark mode. */
+:root {
+  /* accent (dark default: violet / cyan / pink) */
+  --neon: 124 92 255;
+  --neon2: 0 229 255;
+  --neon3: 255 78 205;
+
+  /* surfaces + text (dark) */
+  --bg-base: #0a0b13;
+  --bg-glow-1: #181a3a;
+  --bg-glow-2: #2a1140;
+  --panel: rgba(20, 22, 38, 0.72);
+  --fg: #e9ecff;
+  --scrollbar: rgba(124, 92, 255, 0.4);
+}
+
+:root[data-theme="light"] {
+  /* surfaces + text (light). Accent vars are intentionally NOT overridden
+     here — the chosen accent applies in both modes. */
+  --bg-base: #f4f5fb;
+  --bg-glow-1: #dfe3ff;
+  --bg-glow-2: #f0e0ff;
+  --panel: rgba(255, 255, 255, 0.75);
+  --fg: #1b1e30;
+  --scrollbar: rgba(124, 92, 255, 0.45);
+}
+
 html,
 body {
   min-height: 100%;
-  background: radial-gradient(1200px 700px at 15% -10%, #181a3a 0%, transparent 55%),
-    radial-gradient(1000px 600px at 100% 0%, #2a1140 0%, transparent 50%), #0a0b13;
-  color: #e9ecff;
+  background: radial-gradient(1200px 700px at 15% -10%, var(--bg-glow-1) 0%, transparent 55%),
+    radial-gradient(1000px 600px at 100% 0%, var(--bg-glow-2) 0%, transparent 50%), var(--bg-base);
+  color: var(--fg);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -16,7 +50,7 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(124, 92, 255, 0.4);
+  background: var(--scrollbar);
   border-radius: 9px;
 }
 

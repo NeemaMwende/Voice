@@ -59,6 +59,7 @@ export default function RecordingsPage() {
                 <button
                   onClick={() => setPlaying(playing === r.id ? null : r.id)}
                   className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-neon to-neon3 hover:scale-105 transition-transform"
+                  aria-label={playing === r.id ? "Pause" : "Play"}
                 >
                   <IconPlay className="w-4 h-4 text-white" />
                 </button>

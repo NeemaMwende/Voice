@@ -1,29 +1,71 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { Recording } from "@/context/AppContext";
-import { diffRaw, fmtStamp, initials, Speaker } from "@/lib/notes";
-import { IconSparkle, IconUsers } from "./icons";
+import { fmtDuration, initials, Speaker } from "@/lib/notes";
+import { IconUsers } from "./icons";
 
-type Mode = "clean" | "verbatim";
+const SPEAKER_COLORS = ["#7c5cff", "#00e5ff", "#ff4ecd", "#2ee6a6", "#ffb454"];
 
-export default function TranscriptView({ rec }: { rec: Recording }) {
-  const [mode, setMode] = useState<Mode>("clean");
-
+export default function TranscriptView({
+  rec,
+  audioRef,
+  onSpeakersChange,
+}: {
+  rec: Recording;
+  audioRef?: React.RefObject<HTMLAudioElement | null>;
+  onSpeakersChange?: (speakers: Speaker[]) => void;
+}) {
   const speakerMap = useMemo(() => {
     const m: Record<string, Speaker> = {};
     rec.speakers?.forEach((s) => (m[s.id] = s));
     return m;
   }, [rec.speakers]);
 
-  const removedCount = useMemo(
-    () =>
-      (rec.segments ?? []).reduce(
-        (n, s) => n + diffRaw(s.raw, s.clean).filter((t) => t.removed && /\S/.test(t.text)).length,
-        0
-      ),
-    [rec.segments]
+  const [activeIndex, setActiveIndex] = useState<number>(-1);
+  const [userScrolled, setUserScrolled] = useState(false);
+  const userScrollTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  // Click-to-seek: jump audio playback to a segment's start time
+  const handleSeek = useCallback(
+    (tSec: number) => {
+      if (audioRef?.current) {
+        audioRef.current.currentTime = tSec;
+        audioRef.current.play();
+      }
+    },
+    [audioRef]
   );
+
+  // Playback highlight: listen to timeupdate events and find the active segment
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio) return;
+    const onTimeUpdate = () => {
+      const current = audio.currentTime;
+      const idx = rec.segments.findIndex((seg, i) => {
+        const end = seg.endSec ?? rec.segments[i + 1]?.tSec ?? Infinity;
+        return seg.tSec <= current && current < end;
+      });
+      setActiveIndex(idx);
+    };
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    return () => audio.removeEventListener("timeupdate", onTimeUpdate);
+  }, [audioRef, rec.segments]);
+
+  // Auto-scroll to active segment, suppressed for 3s after manual scroll
+  const containerRef = useRef<HTMLDivElement>(null);
+  const handleManualScroll = useCallback(() => {
+    setUserScrolled(true);
+    clearTimeout(userScrollTimer.current);
+    userScrollTimer.current = setTimeout(() => setUserScrolled(false), 3000);
+  }, []);
+
+  useEffect(() => {
+    if (activeIndex >= 0 && !userScrolled) {
+      document.getElementById(`seg-${activeIndex}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeIndex, userScrolled]);
 
   // graceful fallback for any older records without diarized segments
   if (!rec.segments?.length) {
@@ -32,99 +74,87 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
 
   return (
     <div>
-      {/* toolbar: speaker count + mode toggle */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 text-[11.5px] text-muted">
-          <IconUsers className="h-4 w-4" />
-          {rec.speakers.length} {rec.speakers.length === 1 ? "speaker" : "speakers"}
-          <span className="mx-1.5 opacity-40">·</span>
-          {mode === "verbatim" ? (
-            <span className="text-neon3">{removedCount} noise words highlighted</span>
-          ) : (
-            <span className="text-ok">{removedCount} noise words removed</span>
-          )}
-        </div>
-
-        <div className="flex rounded-full bg-white/[0.05] p-1 text-[11px] font-semibold">
-          {(["clean", "verbatim"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition-all ${
-                mode === m ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_4px_14px_-4px_#7c5cff]" : "text-muted hover:text-white"
-              }`}
-            >
-              {m === "clean" ? (
-                <>
-                  <IconSparkle className="h-3.5 w-3.5" /> Cleaned
-                </>
-              ) : (
-                "Verbatim"
-              )}
-            </button>
-          ))}
-        </div>
+      {/* speaker count */}
+      <div className="mb-4 flex items-center gap-1.5 text-[11.5px] text-muted">
+        <IconUsers className="h-4 w-4" />
+        {rec.speakers.length} {rec.speakers.length === 1 ? "speaker" : "speakers"}
       </div>
 
       {/* speaker turns */}
-      <div className="space-y-4">
+      <div ref={containerRef} className="space-y-4" onWheel={handleManualScroll} onTouchMove={handleManualScroll}>
         {rec.segments.map((seg, i) => {
           const sp = speakerMap[seg.speakerId] ?? { id: seg.speakerId, name: "Speaker", color: "#7c5cff" };
+          const isActive = activeIndex === i;
           return (
-            <div key={i} className="flex gap-3">
-              {/* avatar */}
+            <div
+              key={i}
+              id={`seg-${i}`}
+              onClick={() => handleSeek(seg.tSec)}
+              className={`flex gap-3 cursor-pointer transition-all ${isActive ? "bg-neon2/5 -mx-3 px-3 rounded-2xl" : ""}`}
+            >
+              {/* avatar — click to cycle color */}
               <div className="flex flex-col items-center pt-0.5">
-                <div
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white"
-                  style={{ background: `linear-gradient(135deg, ${sp.color}, ${sp.color}99)`, boxShadow: `0 6px 16px -6px ${sp.color}` }}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!onSpeakersChange) return;
+                    const idx = rec.speakers.findIndex((s) => s.id === sp.id);
+                    if (idx === -1) return;
+                    const cur = SPEAKER_COLORS.indexOf(sp.color);
+                    const next = SPEAKER_COLORS[(cur + 1) % SPEAKER_COLORS.length];
+                    const updated = rec.speakers.map((s, i) =>
+                      i === idx ? { ...s, color: next } : s
+                    );
+                    onSpeakersChange(updated);
+                  }}
+                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white transition-shadow cursor-pointer hover:scale-105 ${isActive ? "shadow-[0_0_20px_-4px]" : ""}`}
+                  style={{ background: `linear-gradient(135deg, ${sp.color}, ${sp.color}99)`, boxShadow: isActive ? `0 0 20px -4px ${sp.color}` : `0 6px 16px -6px ${sp.color}` }}
+                  aria-label="Change speaker color"
                 >
                   {initials(sp.name)}
-                </div>
+                </button>
                 {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-white/10" />}
               </div>
 
               {/* bubble */}
               <div className="min-w-0 flex-1 pb-1">
                 <div className="mb-1 flex items-baseline gap-2">
-                  <span className="text-[13px] font-semibold" style={{ color: sp.color }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!onSpeakersChange) return;
+                      const newName = prompt("Rename speaker:", sp.name);
+                      if (newName && newName !== sp.name) {
+                        const idx = rec.speakers.findIndex((s) => s.id === sp.id);
+                        if (idx === -1) return;
+                        const updated = rec.speakers.map((s, i) =>
+                          i === idx ? { ...s, name: newName } : s
+                        );
+                        onSpeakersChange(updated);
+                      }
+                    }}
+                    className="text-[13px] font-semibold hover:underline focus:outline-none"
+                    style={{ color: sp.color }}
+                    aria-label="Rename speaker"
+                  >
                     {sp.name}
-                  </span>
-                  <span className="font-mono text-[10.5px] text-muted">{fmtStamp(seg.tSec)}</span>
+                  </button>
+                  <span className="font-mono text-[10.5px] text-muted">{fmtDuration(seg.tSec)}</span>
                 </div>
                 <div
-                  className="whitespace-pre-wrap rounded-2xl rounded-tl-md border border-white/[0.06] bg-white/[0.03] px-4 py-2.5 text-[13.5px] leading-relaxed text-[#dfe2fb]"
+                  className={`whitespace-pre-wrap rounded-2xl rounded-tl-md border px-4 py-2.5 text-[13.5px] leading-relaxed transition-all ${
+                    isActive
+                      ? "border-neon2/40 bg-neon2/10 text-white"
+                      : "border-white/[0.06] bg-white/[0.03] text-[#dfe2fb]"
+                  }`}
                 >
-                  {mode === "clean" ? seg.clean : <Verbatim raw={seg.raw} clean={seg.clean} />}
+                  {seg.clean}
                 </div>
               </div>
             </div>
           );
         })}
       </div>
-
-      {mode === "verbatim" && (
-        <div className="mt-4 flex items-center gap-2 text-[11px] text-muted">
-          <span className="inline-block rounded bg-neon3/15 px-1.5 py-0.5 text-neon3 line-through decoration-neon3/70">removed</span>
-          fillers, stutters &amp; background noise stripped in the cleaned view
-        </div>
-      )}
     </div>
-  );
-}
-
-function Verbatim({ raw, clean }: { raw: string; clean: string }) {
-  const tokens = useMemo(() => diffRaw(raw, clean), [raw, clean]);
-  return (
-    <span>
-      {tokens.map((t, i) =>
-        t.removed && /\S/.test(t.text) ? (
-          <span key={i} className="rounded bg-neon3/10 text-neon3/80 line-through decoration-neon3/60">
-            {t.text}
-          </span>
-        ) : (
-          <span key={i}>{t.text}</span>
-        )
-      )}
-    </span>
   );
 }

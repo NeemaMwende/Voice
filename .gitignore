@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+backend/.env
+
+# Node
+node_modules/
+.next/
+
+# Build artifacts
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+backend/test_speech.wav
+backend/test_ws_client.py
