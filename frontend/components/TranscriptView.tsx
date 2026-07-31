@@ -6,15 +6,15 @@ import { diffRaw, fmtStamp, initials, Segment, SentenceSpan, Speaker } from "@/l
 import { IconSparkle, IconUsers } from "./icons";
 
 /**
- * Three tiers of the same conversation, and nothing is ever thrown away:
+ * Views of the same conversation, and nothing is ever thrown away:
  *
- *   Verbatim  every word, with fillers struck in pink and off-topic
- *             sentences struck in amber
- *   Cleaned   fillers gone, every topic still present
- *   Business  the business discussion — what an SOP would be written from.
- *             Set-aside sentences stay visible in place, struck through, so
- *             you can always see what was excluded (toggle to hide them).
- *   Compare   verbatim and business side by side
+ *   Verbatim  exactly as spoken — every word, no markup at all
+ *   Cleaned   what cleaning removed, struck through in place: filler words in
+ *             pink, set-aside sentences in amber. The toggle hides them,
+ *             leaving the clean business read-through.
+ *   Business  NOT a transcript: the business record the model wrote from the
+ *             cleaned text, in prose. This is the SOP's source text.
+ *   Compare   verbatim and cleaned side by side
  */
 type Mode = "compare" | "verbatim" | "clean" | "business";
 
@@ -27,7 +27,10 @@ const MODES: { id: Mode; label: string }[] = [
 
 const isSmallTalk = (s: SentenceSpan) => s.label === "smalltalk";
 
-/** Business text for a turn, falling back through the tiers for old records. */
+/**
+ * Business text for a turn — what the Cleaned view reads through. Falls back
+ * through the tiers so records made before the relevance pass still render.
+ */
 function businessText(seg: Segment): string {
   if (seg.relevant !== undefined) return seg.relevant.trim();
   if (seg.sentences?.length) {
@@ -107,7 +110,7 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
         </div>
       </div>
 
-      {mode === "business" && (
+      {mode === "clean" && (
         <label className="mb-3 flex cursor-pointer items-center gap-2 text-[11.5px] text-muted">
           <input
             type="checkbox"
@@ -115,67 +118,75 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
             onChange={() => setHideRemoved((v) => !v)}
             className="h-3.5 w-3.5 cursor-pointer accent-neon"
           />
-          Hide the set-aside sentences
+          Hide the crossed-out filler &amp; small talk
         </label>
       )}
 
       {/* column headings, compare mode only */}
       {mode === "compare" && (
         <div className="mb-2 hidden gap-3 pl-12 md:grid md:grid-cols-2">
-          <ColumnHead tint="text-neon3" label="Verbatim" note="everything, as spoken" />
-          <ColumnHead tint="text-ok" label="Business only" note="small talk & noise removed" />
+          <ColumnHead tint="text-neon3" label="Verbatim" note="every word, as spoken" />
+          <ColumnHead tint="text-ok" label="Cleaned" note="filler & small talk removed" />
         </div>
       )}
 
-      {/* speaker turns */}
-      <div className="space-y-4">
-        {rec.segments.map((seg, i) => {
-          const sp = speakerMap[seg.speakerId] ?? { id: seg.speakerId, name: "Speaker", color: "#7c5cff" };
-          return (
-            <div key={i} className="flex gap-3">
-              {/* avatar */}
-              <div className="flex flex-col items-center pt-0.5">
-                <div
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white"
-                  style={{ background: `linear-gradient(135deg, ${sp.color}, ${sp.color}99)`, boxShadow: `0 6px 16px -6px ${sp.color}` }}
-                >
-                  {initials(sp.name)}
-                </div>
-                {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-white/10" />}
-              </div>
-
-              {/* bubble(s) */}
-              <div className="min-w-0 flex-1 pb-1">
-                <div className="mb-1 flex items-baseline gap-2">
-                  <span className="text-[13px] font-semibold" style={{ color: sp.color }}>
-                    {sp.name}
-                  </span>
-                  <span className="font-mono text-[10.5px] text-muted">{fmtStamp(seg.tSec)}</span>
-                </div>
-
-                {mode === "compare" ? (
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <Bubble accent="verbatim" caption="Verbatim">
-                      <VerbatimTurn seg={seg} />
-                    </Bubble>
-                    <Bubble accent="clean" caption="Business only">
-                      <BusinessTurn seg={seg} hideRemoved />
-                    </Bubble>
+      {/* The business record replaces the turn-by-turn read entirely — it is a
+          written account, so there is nothing to attribute to a speaker. */}
+      {mode === "business" ? (
+        <BusinessRecord text={rec.businessSummary} />
+      ) : (
+        <div className="space-y-4">
+          {rec.segments.map((seg, i) => {
+            const sp = speakerMap[seg.speakerId] ?? { id: seg.speakerId, name: "Speaker", color: "#7c5cff" };
+            return (
+              <div key={i} className="flex gap-3">
+                {/* avatar */}
+                <div className="flex flex-col items-center pt-0.5">
+                  <div
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white"
+                    style={{ background: `linear-gradient(135deg, ${sp.color}, ${sp.color}99)`, boxShadow: `0 6px 16px -6px ${sp.color}` }}
+                  >
+                    {initials(sp.name)}
                   </div>
-                ) : (
-                  <Bubble accent={mode === "verbatim" ? "verbatim" : "clean"}>
-                    {mode === "verbatim" && <VerbatimTurn seg={seg} />}
-                    {mode === "clean" && (seg.clean.trim() || <Empty>Filler only — nothing left after cleaning.</Empty>)}
-                    {mode === "business" && <BusinessTurn seg={seg} hideRemoved={hideRemoved} />}
-                  </Bubble>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+                  {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-white/10" />}
+                </div>
 
-      {mode !== "clean" && (
+                {/* bubble(s) */}
+                <div className="min-w-0 flex-1 pb-1">
+                  <div className="mb-1 flex items-baseline gap-2">
+                    <span className="text-[13px] font-semibold" style={{ color: sp.color }}>
+                      {sp.name}
+                    </span>
+                    <span className="font-mono text-[10.5px] text-muted">{fmtStamp(seg.tSec)}</span>
+                  </div>
+
+                  {mode === "compare" ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Bubble accent="verbatim" caption="Verbatim">
+                        <VerbatimTurn seg={seg} />
+                      </Bubble>
+                      <Bubble accent="clean" caption="Cleaned">
+                        <CleanedTurn seg={seg} hideRemoved />
+                      </Bubble>
+                    </div>
+                  ) : (
+                    <Bubble accent={mode === "verbatim" ? "verbatim" : "clean"}>
+                      {mode === "verbatim" ? (
+                        <VerbatimTurn seg={seg} />
+                      ) : (
+                        <CleanedTurn seg={seg} hideRemoved={hideRemoved} />
+                      )}
+                    </Bubble>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Only Cleaned marks anything up, and only while the toggle is off. */}
+      {mode === "clean" && !hideRemoved && (
         <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted">
           <span className="flex items-center gap-1.5">
             <span className="rounded bg-neon3/15 px-1.5 py-0.5 text-neon3 line-through decoration-neon3/70">filler</span>
@@ -191,9 +202,25 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
   );
 }
 
-/** Verbatim: nothing hidden. Fillers struck in pink, small talk in amber. */
+/** Verbatim: exactly as spoken. Nothing marked, nothing struck, nothing hidden. */
 function VerbatimTurn({ seg }: { seg: Segment }) {
+  return <>{seg.raw}</>;
+}
+
+/**
+ * Cleaned content. By default it shows what cleaning took out, struck through —
+ * filler words in pink, whole set-aside sentences in amber — so you can see
+ * exactly what was removed and why. Tick the toggle and those disappear,
+ * leaving the clean business read-through.
+ */
+function CleanedTurn({ seg, hideRemoved }: { seg: Segment; hideRemoved: boolean }) {
+  if (hideRemoved) {
+    const business = businessText(seg);
+    return <>{business || <Empty>Nothing left after cleaning.</Empty>}</>;
+  }
+
   if (!seg.sentences?.length) return <Verbatim raw={seg.raw} clean={seg.clean} />;
+
   return (
     <span>
       {seg.sentences.map((s, i) =>
@@ -214,38 +241,44 @@ function VerbatimTurn({ seg }: { seg: Segment }) {
 }
 
 /**
- * Business content. Set-aside sentences stay in place, struck through, unless
- * hidden — so the business read-through never silently loses context.
+ * The business record — not a transcript. The model reads the cleaned text and
+ * writes out the process, steps, rules, figures and decisions in prose; the SOP
+ * is generated from this. Absent on recordings made before it existed, and on
+ * any where the summarizer was unreachable.
  */
-function BusinessTurn({ seg, hideRemoved }: { seg: Segment; hideRemoved: boolean }) {
-  const business = businessText(seg);
-
-  if (!seg.sentences?.length) {
-    return <>{business || <Empty>Nothing left after cleaning.</Empty>}</>;
-  }
-  if (hideRemoved) {
-    return <>{business || <Empty>Small talk only — no business content in this turn.</Empty>}</>;
-  }
-
-  const shown = seg.sentences.filter((s) => (isSmallTalk(s) ? true : s.clean.trim()));
-  if (!shown.length) return <Empty>Filler only — nothing left after cleaning.</Empty>;
+function BusinessRecord({ text }: { text?: string }) {
+  const paragraphs = useMemo(
+    () =>
+      (text ?? "")
+        .split(/\n{2,}/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+    [text]
+  );
 
   return (
-    <span>
-      {shown.map((s, i) =>
-        isSmallTalk(s) ? (
-          <span
-            key={i}
-            title={s.reason ? `Set aside: ${s.reason}` : "Set aside as small talk"}
-            className="rounded bg-warn/10 text-warn/70 line-through decoration-warn/60"
-          >
-            {s.clean || s.raw}{" "}
-          </span>
-        ) : (
-          <span key={i}>{s.clean} </span>
-        )
+    <div className="rounded-2xl border border-ok/20 bg-ok/[0.04] px-5 py-4">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-ok">
+        <IconSparkle className="h-3.5 w-3.5" />
+        Business record
+      </div>
+      <p className="mb-3 text-[11.5px] text-muted">
+        Written by the model from the cleaned transcript — the source text for the SOP.
+      </p>
+      {paragraphs.length ? (
+        <div className="space-y-3 text-[13.5px] leading-relaxed text-[#dfe2fb]">
+          {paragraphs.map((p, i) => (
+            <p key={i}>{p}</p>
+          ))}
+        </div>
+      ) : (
+        <Empty>
+          No business record for this recording — it was transcribed before this
+          existed, the summarizer was unreachable, or the conversation carried no
+          business content. Switch to Cleaned to read the transcript itself.
+        </Empty>
       )}
-    </span>
+    </div>
   );
 }
 

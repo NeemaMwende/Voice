@@ -48,6 +48,13 @@ export type NoteContent = {
   segments: Segment[];
   /** overview — the "what was this about" paragraph(s) */
   summary: NoteSection[];
+  /**
+   * The business record: prose paragraphs the model extracted from the cleaned
+   * transcript, covering the process, steps, rules, figures and decisions. This
+   * is what the SOP gets generated from, and what the Transcript tab shows under
+   * "Business only" — it is a written account, not a transcript.
+   */
+  businessSummary?: string;
   /** key points */
   key: string[];
   actionItems?: string[];

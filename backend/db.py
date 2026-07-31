@@ -51,6 +51,8 @@ class Recording(Base):
     duration_sec: Mapped[int] = mapped_column(Integer, default=0)
     transcript: Mapped[str] = mapped_column(Text, default="")
     audio_url: Mapped[str] = mapped_column(Text, default="")
+    # Prose account of the business content — the SOP's source text.
+    business_summary: Mapped[str] = mapped_column(Text, default="")
 
     speakers: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     segments: Mapped[List[Any]] = mapped_column(JSONB, default=list)
@@ -71,6 +73,7 @@ class Recording(Base):
             "createdAt": self.created_at,
             "durationSec": self.duration_sec,
             "transcript": self.transcript,
+            "businessSummary": self.business_summary or "",
             "audioUrl": self.audio_url or None,
             "speakers": self.speakers or [],
             "segments": self.segments or [],
@@ -93,6 +96,7 @@ class Recording(Base):
             created_at=int(data.get("createdAt") or 0),
             duration_sec=int(data.get("durationSec") or 0),
             transcript=data.get("transcript") or "",
+            business_summary=data.get("businessSummary") or "",
             audio_url=data.get("audioUrl") or "",
             speakers=data.get("speakers") or [],
             segments=data.get("segments") or [],
@@ -105,19 +109,27 @@ class Recording(Base):
         )
 
 
-# Columns added after the table first shipped. ``create_all`` only creates
-# missing *tables*, so existing installs need these filled in explicitly.
-_ADDED_COLUMNS = ("action_items", "insights", "outline")
+# Columns added after the table first shipped, with the DDL to backfill them.
+# ``create_all`` only creates missing *tables*, so existing installs need these
+# filled in explicitly.
+_JSON_LIST = "JSONB NOT NULL DEFAULT '[]'::jsonb"
+_TEXT = "TEXT NOT NULL DEFAULT ''"
+
+_ADDED_COLUMNS: Dict[str, str] = {
+    "action_items": _JSON_LIST,
+    "insights": _JSON_LIST,
+    "outline": _JSON_LIST,
+    "business_summary": _TEXT,
+}
 
 
 def init_db() -> None:
     """Create the recordings table if it doesn't already exist, then migrate."""
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
-        for column in _ADDED_COLUMNS:
+        for column, ddl in _ADDED_COLUMNS.items():
             conn.execute(
                 text(
-                    f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS "
-                    f"{column} JSONB NOT NULL DEFAULT '[]'::jsonb"
+                    f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS {column} {ddl}"
                 )
             )

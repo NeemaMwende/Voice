@@ -38,6 +38,8 @@ type TranscriptionResponse = {
   language: string;
   duration: number | null;
   summary?: string | null;
+  /** prose account of the business content — the SOP's source text */
+  business_summary?: string | null;
   key_points?: string[];
   action_items?: string[];
   insights?: NoteSection[];
@@ -163,6 +165,7 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     speakers,
     segments,
     summary: [{ heading: "Overview", body: overview }],
+    businessSummary: response.business_summary?.trim() || undefined,
     key: keyPoints.length ? keyPoints : metaFacts,
     actionItems,
     insights,

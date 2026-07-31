@@ -146,6 +146,9 @@ class TranscriptionResponse(BaseModel):
     language: str
     duration: Optional[float] = None
     summary: Optional[str] = None
+    # Prose account of the business content, written from the small-talk-free
+    # tier. Shown on the Transcript tab and used to generate the SOP.
+    business_summary: Optional[str] = None
     key_points: List[str] = []
     action_items: List[str] = []
     insights: List[NoteSection] = []
@@ -532,7 +535,7 @@ def _run_transcription(
         result = summarization.summarize(
             notes_source,
             on_progress=lambda frac, label: progress.update(
-                job_id, 80 + 18 * frac, "analyzing", label
+                job_id, 80 + 12 * frac, "analyzing", label
             ),
         )
         summary_text = result["summary"] or None
@@ -543,6 +546,23 @@ def _run_transcription(
     except summarization.SummaryUnavailable as exc:
         print(f"[summarization] unavailable: {exc}")
 
+    # The business record: the same business-only text written out as prose,
+    # which is what the SOP will be generated from. Shown on the Transcript tab
+    # in place of a business "transcript" — also best-effort, never fatal.
+    business_summary: Optional[str] = None
+    try:
+        business_summary = (
+            summarization.summarize_business(
+                notes_source,
+                on_progress=lambda frac: progress.update(
+                    job_id, 92 + 6 * frac, "analyzing", "Writing the business record"
+                ),
+            )
+            or None
+        )
+    except summarization.SummaryUnavailable as exc:
+        print(f"[summarization] business record unavailable: {exc}")
+
     progress.finish(job_id)
     return TranscriptionResponse(
         transcript=transcript,
@@ -552,6 +572,7 @@ def _run_transcription(
         # drives playback length and the "minutes transcribed" stat.
         duration=original_duration,
         summary=summary_text,
+        business_summary=business_summary,
         key_points=key_points,
         action_items=action_items,
         insights=[NoteSection(**section) for section in insights],

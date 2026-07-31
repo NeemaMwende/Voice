@@ -8,6 +8,11 @@ Turns the raw transcript into the structured note set the UI renders:
   * action_items  — commitments / follow-ups
   * outline       — chronological topic-by-topic breakdown of the whole talk
 
+It also writes the **business record** (``summarize_business``): a detailed prose
+account of the work discussed, extracted from the business-only tier of the
+transcript. That is the text an SOP gets generated from, so it errs towards
+keeping procedural detail rather than being short.
+
 Long meetings are handled map-reduce style: each chunk is condensed to notes
 *and* its own outline sections (so nothing is lost from the middle of a long
 conversation), then a final pass produces the overview / key points / insights
@@ -44,6 +49,10 @@ REQUEST_TIMEOUT = 300  # seconds; local models can be slow on long inputs
 NAME_SCAN_CHARS = 7000
 
 ProgressFn = Optional[Callable[[float, str], None]]
+
+# The business record runs as a single stage, so its callback only reports how
+# far through it is — the caller already knows what to label it.
+FractionFn = Optional[Callable[[float], None]]
 
 
 class SummaryUnavailable(RuntimeError):
@@ -541,6 +550,106 @@ def summarize(transcript: str, *, on_progress: ProgressFn = None) -> Dict[str, o
         "insights": insights,
         "outline": outline,
     }
+
+
+# ---------------------------------------------------------------------------
+# Business record — the SOP's source text
+# ---------------------------------------------------------------------------
+
+_BUSINESS_INTRO = (
+    "You are writing the business record of a meeting from a transcript that "
+    "has already had its filler and its small talk removed. A Standard "
+    "Operating Procedure will be written from this record later, so procedural "
+    "detail matters far more than brevity.\n"
+)
+
+# What the record must contain, shared by both request shapes below.
+_BUSINESS_CONTENT = (
+    "Set out, in the order the work happens:\n"
+    "   - what work, process or task is being described, and why;\n"
+    "   - each step involved and who carries it out;\n"
+    "   - the systems, tools, documents and data used at each step;\n"
+    "   - the rules, conditions, approvals and exceptions that apply;\n"
+    "   - every number, amount, date, deadline and identifier mentioned;\n"
+    "   - what was decided or agreed, and what remains a problem, blocker or "
+    "open question.\n"
+    "Write plain prose paragraphs, not bullet lists and not dialogue. Do not "
+    "summarise the specifics away: keep exact figures, system names and the "
+    "precise wording of any rule or condition. Include nothing that is not in "
+    "the transcript. Never invent a person's name — name someone only where the "
+    "transcript names them, and otherwise describe them by role or as a "
+    "participant."
+)
+
+_BUSINESS_SYSTEM = (
+    _BUSINESS_INTRO
+    + "Reply with ONLY a JSON object with one field:\n"
+    '  "paragraphs": an array of 2-6 paragraphs of 3-6 sentences each.\n'
+    + _BUSINESS_CONTENT
+)
+
+# Fallback shape. A small model asked for a long JSON string can run out of
+# room and truncate mid-value, which is unparseable and costs the whole record;
+# plain prose has no such failure mode.
+_BUSINESS_PROSE_SYSTEM = (
+    _BUSINESS_INTRO
+    + "Reply with 2-6 paragraphs of 3-6 sentences each as plain text, with a "
+    "blank line between paragraphs. No JSON, no headings, no bullet points.\n"
+    + _BUSINESS_CONTENT
+)
+
+# JSON attempts before falling back to prose. Retrying is worth it because the
+# failure is usually a one-off malformed reply, not a refusal.
+_BUSINESS_ATTEMPTS = 2
+
+
+def _business_paragraphs(label: str, chunk: str, vocab: set) -> List[str]:
+    """One chunk's paragraphs, retried and then re-asked as plain prose."""
+    user = f"{label}:\n\n{chunk}"
+    for _ in range(_BUSINESS_ATTEMPTS):
+        parsed = _chat_json(_BUSINESS_SYSTEM, user)
+        found = _scrub_all(_strings(parsed.get("paragraphs", []), limit=12), vocab)
+        if found:
+            return found
+        print("[summarization] business record reply unusable; retrying")
+
+    prose = _chat(_BUSINESS_PROSE_SYSTEM, user)
+    return _scrub_all(
+        [para.strip() for para in re.split(r"\n{2,}", prose) if para.strip()], vocab
+    )
+
+
+def summarize_business(transcript: str, *, on_progress: FractionFn = None) -> str:
+    """Write the detailed business record for a business-only transcript.
+
+    Takes the small-talk-free tier of the transcript and returns prose
+    paragraphs separated by blank lines. Raises SummaryUnavailable when there is
+    nothing to work from or the model returns nothing usable.
+
+    Long inputs are handled chunk by chunk and the results concatenated, rather
+    than reduced into one pass — a second reduction is exactly what throws away
+    the procedural detail the SOP needs.
+    """
+    transcript = (transcript or "").strip()
+    if not _is_meaningful(transcript):
+        raise SummaryUnavailable("No business content to write a record from.")
+
+    vocab = _vocabulary(transcript)
+    chunks = _chunk(transcript, CHUNK_CHARS)
+    paragraphs: List[str] = []
+    for i, chunk in enumerate(chunks):
+        label = (
+            f"Business transcript part {i + 1} of {len(chunks)}"
+            if len(chunks) > 1
+            else "Business transcript"
+        )
+        paragraphs.extend(_business_paragraphs(label, chunk, vocab))
+        if on_progress:
+            on_progress((i + 1) / len(chunks))
+
+    if not paragraphs:
+        raise SummaryUnavailable("Model returned an empty business record.")
+    return "\n\n".join(paragraphs)
 
 
 # ---------------------------------------------------------------------------
