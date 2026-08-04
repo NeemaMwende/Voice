@@ -18,7 +18,7 @@ import subprocess
 import threading
 from typing import Dict, List, Optional
 
-MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
+MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote-community/speaker-diarization-community-1")
 
 # pyannote ingests 16 kHz mono audio. We decode to that ourselves (below).
 DIARIZE_SR = 16000

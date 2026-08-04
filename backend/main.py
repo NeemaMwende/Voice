@@ -467,7 +467,9 @@ def _run_transcription(
             done = min(1.0, float(getattr(segment, "end", 0.0) or 0.0) / total_sec)
             progress.update(job_id, 15 + 45 * done, "transcribing", "Transcribing audio")
 
-    return {"progress_id": progress_id}
+    transcript = " ".join(
+        getattr(s, "text", "").strip() for s in raw_segments if getattr(s, "text", "").strip()
+    ).strip()
 
     # Diarize + merge; fall back to single-speaker grouping if unavailable.
     # pyannote gets the same silence-stripped waveform Whisper did, so its turns
