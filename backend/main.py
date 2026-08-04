@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
 import cleaning
+import denoise
 import diarization
 import progress
 import relevance
@@ -385,7 +386,10 @@ def health():
         "device": DEVICE,
         "diarization_available": diarization.is_available(),
         "diarization_note": diarization.unavailable_reason(),
+        "denoise_available": denoise.is_available(),
+        "denoise_note": denoise.unavailable_reason(),
         "silero_vad": vad.ENABLED,
+        "silero_vad_backend": vad.backend(),
         "verbatim_prompt": VERBATIM,
         "relevance_filter": relevance.ENABLED,
         "relevance_model": relevance.MODEL,
@@ -424,12 +428,24 @@ def _run_transcription(
     audio_path, audio_url = save_upload(file)
     progress.update(job_id, 8, "uploading", "Saving audio")
 
-    # Silero VAD pre-pass: decode once, then cut the silence out so Whisper and
-    # pyannote only ever process speech. Both stages cost time proportional to
-    # the audio they're handed, so this is where the runtime saving comes from.
-    # `speech` is None when the pre-pass is off or found nothing — in that case
-    # everything below falls back to the full audio, unchanged.
-    full_audio = vad.decode(audio_path)
+    # Two-stage audio clean-up before anything transcribes:
+    #
+    #   1. DeepFilterNet (denoise.py) strips background noise — fans, traffic,
+    #      keyboards, mic hiss. Returns 16 kHz mono float32 already, so it
+    #      replaces the decode rather than adding one; None means it's off or
+    #      it failed, and we decode the original instead.
+    #   2. Silero VAD (vad.py) cuts the silence out so Whisper and pyannote only
+    #      ever process speech. Both cost time proportional to the audio they're
+    #      handed, so this is where the runtime saving comes from.
+    #
+    # Neither stage is allowed to be fatal: `speech` is None when the pre-pass
+    # is off or found nothing, and everything below then falls back to the full
+    # audio, unchanged. Denoising preserves length sample-for-sample, so it
+    # doesn't disturb any timestamp.
+    progress.update(job_id, 9, "uploading", "Removing background noise")
+    full_audio = denoise.denoise(audio_path)
+    if full_audio is None:
+        full_audio = vad.decode(audio_path)
     original_duration = len(full_audio) / vad.SAMPLE_RATE
     progress.update(job_id, 12, "uploading", "Detecting speech")
     speech = vad.trim_silence(full_audio)
@@ -479,7 +495,11 @@ def _run_transcription(
         turns = diarization.diarize(
             audio_path,
             num_speakers=num_speakers,
-            waveform=speech.audio if speech is not None else None,
+            # Hand over the same cleaned waveform Whisper got — trimmed if the
+            # VAD pre-pass ran, full-length otherwise. Either way it's the
+            # denoised audio, which is what stops pyannote from splitting one
+            # voice into several when the noise floor shifts.
+            waveform=speech.audio if speech is not None else full_audio,
         )
     except diarization.DiarizationUnavailable as exc:
         print(f"[diarization] unavailable: {exc}")

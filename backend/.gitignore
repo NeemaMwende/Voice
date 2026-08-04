@@ -3,6 +3,9 @@ venv
 media
 __pycache__
 
+# DeepFilterNet binary (~36 MB, fetched by scripts/install_deep_filter.sh)
+bin/
+
 # Python
 backend/venv/
 venv/

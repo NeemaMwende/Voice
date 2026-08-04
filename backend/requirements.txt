@@ -9,3 +9,11 @@ aiofiles
 pyannote.audio
 torch
 torchaudio
+# Voice activity detection (github.com/snakers4/silero-vad) — see vad.py.
+silero-vad
+# Noise suppression is DeepFilterNet3 (github.com/Rikorose/DeepFilterNet), but
+# it is NOT a pip dependency: the package pins numpy<2 and needs a Rust
+# toolchain, so we use the upstream prebuilt binary instead. Install it with
+#   ./scripts/install_deep_filter.sh
+# See denoise.py for the full reasoning.
+scipy
