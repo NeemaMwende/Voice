@@ -5,11 +5,14 @@ segments**. Transcription is done by [faster-whisper]; speaker diarization by
 [pyannote/speaker-diarization-3.1]. The two are combined in `main.py`
 (`diarization.py` holds the pyannote pipeline).
 
-Before either of them runs, the audio is cleaned up in two passes:
+Before either of them runs, the audio is cleaned up in two passes, and after
+pyannote runs, its speaker labels get a second opinion:
 
 ```
 upload → DeepFilterNet (denoise.py) → Silero VAD (vad.py) → Whisper + pyannote
-             remove noise                remove silence
+             remove noise                remove silence           ↓
+                                          speaker_merge.py ← WeSpeaker re-clustering
+                                            fold duplicate speakers together
 ```
 
 [DeepFilterNet] suppresses background noise — fans, traffic, keyboards, mic
@@ -23,6 +26,57 @@ timestamp still points at the right moment of the file the user plays back.
 [pyannote/speaker-diarization-3.1]: https://huggingface.co/pyannote/speaker-diarization-3.1
 [DeepFilterNet]: https://github.com/Rikorose/DeepFilterNet
 [Silero VAD]: https://github.com/snakers4/silero-vad
+[WeSpeaker]: https://github.com/wenet-e2e/wespeaker
+
+## Why a second speaker pass (`speaker_merge.py`)
+
+pyannote decides who is speaking from embeddings of short sliding windows. That
+is the right unit for *finding* speaker changes and the wrong one for *counting*
+speakers: a few seconds of audio makes a noisy embedding, and noisy embeddings
+split one person across several clusters — the familiar "two-person meeting
+comes back with five speakers".
+
+`speaker_merge.py` re-checks that using each speaker's *entire* contribution
+pooled into one [WeSpeaker] embedding, which is far more stable, and folds
+together labels that turn out to be the same voice. It needs no `num_speakers`
+hint — the count stays fully automatic.
+
+The embedding model is `WeSpeakerResNet34`, **already loaded inside the
+diarization pipeline** (community-1 ships it as its embedding stage), so this
+borrows it rather than loading a second copy: no extra download, no extra
+memory, and the vectors are guaranteed to live in the same space pyannote
+clustered in.
+
+### How the thresholds were chosen
+
+Measured on real EchoNotes recordings — how much pooled speech backs an
+embedding decides everything:
+
+| pooled audio | same speaker (min) | different speakers (median) |
+| ------------ | ------------------ | --------------------------- |
+| 0 – 3 s      | 0.069              | 0.152                       |
+| 3 – 6 s      | 0.079              | 0.191                       |
+| 6 – 12 s     | 0.678              | 0.451                       |
+| 12 s +       | 0.932              | 0.193                       |
+
+Past ~6 s the populations separate cleanly; below it they interleave, and one
+speaker's own two halves can score *below* the median for two different people.
+So a single threshold can't work, and the pass splits on evidence instead:
+well-evidenced speakers are clustered at a strict cosine threshold (0.65, in
+the measured gap between the worst true merge at 0.678 and the worst false one
+at 0.373), while low-evidence fragments may only be *absorbed into* an
+established cluster, and only when the best match clearly beats the runner-up.
+
+Verified against ground truth built from audio rather than from pyannote's own
+labels (a single continuous turn is one person by construction): 18/18 checks —
+one voice cut into 2/3/4 pieces always rejoins, two real speakers never fuse,
+6 pseudo-speakers from 2 real people come back as exactly 2, and sub-second
+phantoms are absorbed.
+
+> Note: the `clustering: {method, min_cluster_size, threshold}` recipe that
+> circulates for pyannote 3.1 does **not** apply to community-1 — it uses VBx
+> clustering, whose parameters are `threshold`, `Fa` and `Fb`. Passing the AHC
+> names raises an error.
 
 ## Setup
 
@@ -120,6 +174,22 @@ The server listens on `http://127.0.0.1:8000`. The frontend points at this via
 | `DEEPFILTER_POSTFILTER` | `0`                | `1` sharpens speech, adds some artefacts        |
 | `DEEPFILTER_CHUNK_SEC`  | `300`              | seconds of audio per parallel chunk             |
 | `DEEPFILTER_WORKERS`    | cores/4, max 4     | chunks denoised in parallel                     |
+
+### Speaker re-clustering (`speaker_merge.py`)
+
+| Var                          | Default | Purpose                                             |
+| ---------------------------- | ------- | --------------------------------------------------- |
+| `SPEAKER_MERGE`              | `1`     | `0` keeps pyannote's labels untouched               |
+| `SPEAKER_MERGE_THRESHOLD`    | `0.65`  | cosine similarity to merge well-evidenced speakers  |
+| `SPEAKER_MERGE_CONFIDENT`    | `6.0`   | pooled speech (s) before a centroid is believed     |
+| `SPEAKER_MERGE_WEAK_MIN`     | `0.35`  | floor for absorbing a low-evidence fragment         |
+| `SPEAKER_MERGE_WEAK_MARGIN`  | `0.10`  | how far the best match must beat the runner-up      |
+| `SPEAKER_MERGE_MIN_TURN`     | `0.5`   | shortest turn worth embedding (s)                   |
+| `SPEAKER_MERGE_MAX_TURNS`    | `40`    | turns embedded per speaker, longest first           |
+
+Raise `SPEAKER_MERGE_THRESHOLD` if distinct speakers ever get fused; lower it
+if one person still comes back as several. Passing `num_speakers` to
+`/transcribe` skips this pass entirely — you've already given the exact answer.
 
 ### Silence trimming (`vad.py`)
 

@@ -33,6 +33,7 @@ import denoise
 import diarization
 import progress
 import relevance
+import speaker_merge
 import summarization
 import vad
 import db
@@ -388,6 +389,8 @@ def health():
         "diarization_note": diarization.unavailable_reason(),
         "denoise_available": denoise.is_available(),
         "denoise_note": denoise.unavailable_reason(),
+        "speaker_merge": speaker_merge.ENABLED,
+        "speaker_merge_threshold": speaker_merge.THRESHOLD,
         "silero_vad": vad.ENABLED,
         "silero_vad_backend": vad.backend(),
         "verbatim_prompt": VERBATIM,
