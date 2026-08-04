@@ -33,6 +33,7 @@ import denoise
 import diarization
 import progress
 import relevance
+import rewrite
 import speaker_merge
 import summarization
 import vad
@@ -120,6 +121,9 @@ class SentenceSpan(BaseModel):
     label: str = "business"
     # Why it was set aside; only present on small talk.
     reason: str = ""
+    # P(business) from the fine-tuned classifier, for tuning RELEVANCE_THRESHOLD.
+    # 1.0 when the deterministic keep-override fired or no classifier ran.
+    relevance: float = 1.0
 
 
 class SpeakerSegment(BaseModel):
@@ -130,9 +134,12 @@ class SpeakerSegment(BaseModel):
     text: str
     # Same turn with lexical noise stripped, but every topic still present.
     clean: str = ""
-    # Business content only: cleaned, minus the small talk. This is the text an
-    # SOP would be written from. Empty when the whole turn was incidental.
+    # Business content only: cleaned, minus the small talk. This is what the
+    # transcript renders. Empty when the whole turn was incidental.
     relevant: str = ""
+    # The same business content with its wording repaired — see rewrite.py. This
+    # is the text the notes and the business record are written from.
+    polished: str = ""
     # Per-sentence breakdown backing the transcript's two-colour strikethrough.
     sentences: List[SentenceSpan] = []
 
@@ -329,24 +336,35 @@ def build_default_speaker_segments(
     return result
 
 
+# Which field backs each tier, and what to fall back to when the stage that
+# writes it never ran. A missing key means exactly that; an empty *value* is a
+# real answer — the turn had nothing at this tier — so it is never filled in
+# from a dirtier tier.
+_TIERS = {
+    "polished": ("polished", "relevant", "clean", "text"),
+    "relevant": ("relevant", "clean", "text"),
+    "clean": ("clean", "text"),
+    "verbatim": ("text",),
+}
+
+
 def labeled_transcript(segments: List[Dict[str, Any]], *, tier: str = "clean") -> str:
     """``Speaker 1: …`` transcript at the requested cleanliness tier.
 
     ``tier="clean"`` keeps every topic with the lexical noise removed;
-    ``tier="relevant"`` additionally drops the small talk. A turn that reduces
-    to nothing at the requested tier is omitted entirely rather than emitted as
-    a bare speaker label.
+    ``tier="relevant"`` additionally drops the small talk; ``tier="polished"``
+    is that same business content with its wording repaired (rewrite.py). A turn
+    that reduces to nothing at the requested tier is omitted entirely rather
+    than emitted as a bare speaker label.
     """
+    keys = _TIERS.get(tier, _TIERS["clean"])
     lines = []
     for seg in segments:
-        # A missing key means that stage never ran, so fall back a tier. An
-        # empty value is a real answer — the turn had nothing at this tier.
-        if tier == "relevant" and "relevant" in seg:
-            text = seg["relevant"]
-        elif "clean" in seg:
-            text = seg["clean"]
-        else:
-            text = seg["text"]
+        text = seg["text"]
+        for key in keys:
+            if key in seg:
+                text = seg[key]
+                break
         if text.strip():
             lines.append(f"{seg['speaker']}: {text}")
     return "\n\n".join(lines)
@@ -395,7 +413,14 @@ def health():
         "silero_vad_backend": vad.backend(),
         "verbatim_prompt": VERBATIM,
         "relevance_filter": relevance.ENABLED,
-        "relevance_model": relevance.MODEL,
+        # "model" = the fine-tuned classifier; "llm" = the Ollama fallback,
+        # which is what runs until finetune.py has produced a checkpoint.
+        "relevance_backend": relevance.backend(),
+        "relevance_model": relevance.model_id(),
+        "relevance_note": relevance.unavailable_reason(),
+        "relevance_threshold": relevance.KEEP_THRESHOLD,
+        "rewrite": rewrite.ENABLED,
+        "rewrite_model": rewrite.MODEL,
     }
 
 
@@ -539,15 +564,27 @@ def _run_transcription(
     tally = relevance.counts(speaker_segments)
     print(
         f"[relevance] {tally['smalltalk']} of {tally['total']} sentences "
-        f"set aside as small talk"
+        f"set aside as small talk ({relevance.backend()})"
+    )
+
+    # Repair the wording of what survived. Dropping the small talk out of the
+    # middle of a turn can leave it reading in fragments, and fragments are what
+    # make a local summarizer produce mush. The rewrite goes into `polished` and
+    # leaves `relevant` — what the transcript UI shows — untouched.
+    progress.update(job_id, 80, "rewriting", "Tidying the business transcript")
+    speaker_segments = rewrite.polish_segments(
+        speaker_segments,
+        on_progress=lambda frac: progress.update(
+            job_id, 80 + 4 * frac, "rewriting", "Tidying the business transcript"
+        ),
     )
 
     # Summarize into the full note set (best-effort; never fatal). Notes are
-    # built from the business-only tier — small talk would otherwise show up as
-    # "action items" — and stay speaker-labelled so they can attribute by name.
-    progress.update(job_id, 80, "analyzing", "Writing notes")
+    # built from the polished business tier — small talk would otherwise show up
+    # as "action items" — and stay speaker-labelled so they can attribute by name.
+    progress.update(job_id, 84, "analyzing", "Writing notes")
     notes_source = (
-        labeled_transcript(speaker_segments, tier="relevant")
+        labeled_transcript(speaker_segments, tier="polished")
         or labeled_transcript(speaker_segments)
         or transcript
     )
@@ -560,7 +597,7 @@ def _run_transcription(
         result = summarization.summarize(
             notes_source,
             on_progress=lambda frac, label: progress.update(
-                job_id, 80 + 12 * frac, "analyzing", label
+                job_id, 84 + 9 * frac, "analyzing", label
             ),
         )
         summary_text = result["summary"] or None
@@ -580,7 +617,7 @@ def _run_transcription(
             summarization.summarize_business(
                 notes_source,
                 on_progress=lambda frac: progress.update(
-                    job_id, 92 + 6 * frac, "analyzing", "Writing the business record"
+                    job_id, 93 + 5 * frac, "analyzing", "Writing the business record"
                 ),
             )
             or None
