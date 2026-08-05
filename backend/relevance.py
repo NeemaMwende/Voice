@@ -79,6 +79,11 @@ DEVICE = int(os.environ.get("RELEVANCE_DEVICE", "-1"))
 INFER_BATCH = int(os.environ.get("RELEVANCE_INFER_BATCH", "32"))
 # Matches finetune.py's MAX_LEN: sentences are short, 128 tokens is plenty.
 MAX_LEN = 128
+# Thread ceiling for the forward pass, restored afterwards. Sequences this short
+# don't have enough work in them to fill many threads, and past ~8 the
+# synchronisation cost dominates badly — measured on a 16-core CPU, letting
+# torch use all 16 threads runs at 17 sentences/s against 136 at 8.
+MAX_THREADS = int(os.environ.get("RELEVANCE_THREADS", "8"))
 
 # Used by the LLM fallback and by escalation. Relevance judgement is a harder
 # task than summarising, so point this at the largest instruction-tuned model
@@ -203,18 +208,27 @@ def p_business(texts: List[str]) -> List[float]:
     business_id = handle["business_id"]
 
     scores: List[float] = []
-    with torch.inference_mode():
-        for i in range(0, len(texts), INFER_BATCH):
-            batch = texts[i : i + INFER_BATCH]
-            encoded = tokenizer(
-                batch,
-                truncation=True,
-                max_length=MAX_LEN,
-                padding=True,
-                return_tensors="pt",
-            ).to(device)
-            probs = torch.softmax(model(**encoded).logits, dim=-1)
-            scores.extend(probs[:, business_id].tolist())
+    # Cap threads for the duration and hand them back: this runs inside the same
+    # process as Whisper and pyannote, whose own thread settings are none of our
+    # business to change permanently.
+    threads = torch.get_num_threads()
+    if device.type == "cpu" and threads > MAX_THREADS:
+        torch.set_num_threads(MAX_THREADS)
+    try:
+        with torch.inference_mode():
+            for i in range(0, len(texts), INFER_BATCH):
+                batch = texts[i : i + INFER_BATCH]
+                encoded = tokenizer(
+                    batch,
+                    truncation=True,
+                    max_length=MAX_LEN,
+                    padding=True,
+                    return_tensors="pt",
+                ).to(device)
+                probs = torch.softmax(model(**encoded).logits, dim=-1)
+                scores.extend(probs[:, business_id].tolist())
+    finally:
+        torch.set_num_threads(threads)
     return scores
 
 

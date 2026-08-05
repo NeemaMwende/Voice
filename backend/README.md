@@ -244,12 +244,23 @@ Until the checkpoint exists the pass falls back to the LLM batch classifier, so
 the pipeline works either way — `GET /health` reports which one is live
 (`relevance_backend`: `model` or `llm`, with `relevance_note` saying why).
 
+At inference it costs about 140 sentences/s on CPU, so the whole pass is a few
+seconds even on a long meeting — the point of fine-tuning was to make it cheap
+enough to run inline with no LLM call per sentence.
+
 **Training it** (local, free, and needs Ollama only for the best results):
 
 ```bash
-python build_dataset.py   # → data/relevance-dataset   (~20 min, downloads corpora)
-python finetune.py        # → models/relevance-filter  (~2 h CPU, seconds on GPU)
+python build_dataset.py   # → data/relevance-dataset   (~15 min, downloads corpora)
+python finetune.py        # → models/relevance-filter  (~2.5 h CPU, minutes on GPU)
 ```
+
+The current checkpoint was trained on 18 579 examples (2 322 validation / 2 323
+test) built *without* Ollama, and scores **accuracy 0.929, macro-F1 0.928,
+business-class recall 0.914** on the held-out test split. Rebuilding the dataset
+with Ollama running should beat that — the synthetic pass is where the hard
+"sounds personal but is staffing" cases come from. `finetune.py` writes its test
+metrics next to the checkpoint as `test_metrics.json`.
 
 `build_dataset.py` combines DailyDialog, EmpatheticDialogues, a meeting corpus
 (AMI where available, otherwise MeetingBank) and QMSum, labels them
@@ -276,6 +287,7 @@ that work. See the comment above `BUSINESS_TOPICS` in `build_dataset.py`.
 | `RELEVANCE_THRESHOLD`       | `0.60`                     | min P(business) to keep a sentence                |
 | `RELEVANCE_DEVICE`          | `-1`                       | `-1` CPU, `0`+ that CUDA device                   |
 | `RELEVANCE_INFER_BATCH`     | `32`                       | sentences per forward pass                        |
+| `RELEVANCE_THREADS`         | `8`                        | CPU thread ceiling for the forward pass           |
 | `RELEVANCE_ESCALATE`        | `0`                        | `1` asks Ollama about low-confidence sentences    |
 | `RELEVANCE_ESCALATE_BELOW`  | `0.75`                     | confidence under which to escalate                |
 | `RELEVANCE_MODEL`           | `OLLAMA_MODEL`             | LLM for the fallback / escalation                 |
