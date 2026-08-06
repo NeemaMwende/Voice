@@ -10,7 +10,7 @@ import NotesViewer from "@/components/NotesViewer";
 import { IconNotes, IconUpload } from "@/components/icons";
 
 export default function NotesPage() {
-  const { recordings, loading } = useApp();
+  const { recordings, loading, addRecording } = useApp();
   const [selected, setSelected] = useState<string | null>(null);
   const deepLinked = useRef(false);
 
@@ -38,7 +38,7 @@ export default function NotesPage() {
     return (
       <div>
         <PageHeader title="Notes" subtitle="Every set of generated notes, in one place." />
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center text-[13.5px] text-muted">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center text-[13.5px] text-muted">
           Loading your notes…
         </div>
       </div>
@@ -49,7 +49,7 @@ export default function NotesPage() {
     return (
       <div>
         <PageHeader title="Notes" subtitle="Every set of generated notes, in one place." />
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-14 text-center">
           <IconNotes className="w-14 h-14 mx-auto opacity-30 mb-4 text-muted" />
           <p className="text-[13.5px] text-muted mb-5">No notes yet.</p>
           <Link
@@ -81,7 +81,7 @@ export default function NotesPage() {
               className={`w-full text-left rounded-2xl border p-4 transition-all ${
                 selected === r.id
                   ? "border-neon/60 bg-neon/10"
-                  : "border-white/[0.07] bg-panel hover:bg-white/[0.05]"
+                  : "border-overlay/[0.07] bg-panel hover:bg-overlay/[0.05]"
               }`}
             >
               <div className="text-[13.5px] font-semibold truncate">{r.title}</div>
@@ -105,16 +105,15 @@ export default function NotesPage() {
         </div>
 
         {/* viewer */}
-        <div className="flex min-h-0 flex-col rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="flex min-h-0 flex-col rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           {active && (
             <>
               <div className="mb-5 shrink-0">
                 <h2 className="text-[17px] font-bold">{active.title}</h2>
                 <p className="text-[12px] text-muted mt-0.5">{active.fileName}</p>
               </div>
-              {active.audioUrl && <audio src={active.audioUrl} controls className="mb-5 w-full rounded-xl shrink-0" />}
               <div className="min-h-0 flex-1">
-                <NotesViewer key={active.id} rec={active} />
+                <NotesViewer key={active.id} rec={active} audioUrl={active.audioUrl} onRecChange={(updated) => addRecording(updated)} />
               </div>
             </>
           )}

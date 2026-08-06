@@ -8,17 +8,24 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        bg: "#0a0b13",
-        panel: "rgba(20,22,38,0.72)",
-        neon: "#7c5cff",
-        neon2: "#00e5ff",
-        neon3: "#ff4ecd",
+        // Surfaces flip with the data-theme attribute (see globals.css).
+        bg: "var(--bg-base)",
+        panel: "var(--panel)",
+        // Accent tokens read RGB channels from CSS vars so the Settings page
+        // can re-theme them at runtime AND opacity modifiers (neon2/10) work.
+        neon: "rgb(var(--neon) / <alpha-value>)",
+        neon2: "rgb(var(--neon2) / <alpha-value>)",
+        neon3: "rgb(var(--neon3) / <alpha-value>)",
+        fg: "rgb(var(--fg) / <alpha-value>)",
+        muted: "var(--muted)",
+        overlay: "rgb(var(--overlay) / <alpha-value>)",
+        bar: "rgb(var(--bar) / <alpha-value>)",
+        toast: "var(--toast)",
         ok: "#2ee6a6",
         // off-topic / small-talk marker in the transcript — deliberately a
         // different hue from neon3 (fillers) so the two kinds of removal are
         // distinguishable at a glance.
         warn: "#ffb454",
-        muted: "#8b90b5",
       },
       boxShadow: {
         card: "0 20px 60px -20px rgba(0,0,0,0.8)",

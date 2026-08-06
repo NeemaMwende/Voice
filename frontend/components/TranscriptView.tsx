@@ -1,9 +1,12 @@
 "use client";
 
-import { ReactNode, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode } from "react";
 import { Recording } from "@/context/AppContext";
-import { diffRaw, fmtStamp, initials, Segment, SentenceSpan, Speaker } from "@/lib/notes";
+import { diffRaw, fmtDuration, initials, Segment, SentenceSpan, Speaker } from "@/lib/notes";
 import { IconSparkle, IconUsers } from "./icons";
+
+const SPEAKER_COLORS = ["#7c5cff", "#00e5ff", "#ff4ecd", "#2ee6a6", "#ffb454"];
 
 /**
  * Views of the same conversation, and nothing is ever thrown away:
@@ -43,7 +46,15 @@ function businessText(seg: Segment): string {
   return seg.clean.trim();
 }
 
-export default function TranscriptView({ rec }: { rec: Recording }) {
+export default function TranscriptView({
+  rec,
+  audioRef,
+  onSpeakersChange,
+}: {
+  rec: Recording;
+  audioRef?: React.RefObject<HTMLAudioElement | null>;
+  onSpeakersChange?: (speakers: Speaker[]) => void;
+}) {
   const [mode, setMode] = useState<Mode>("compare");
   const [hideRemoved, setHideRemoved] = useState(false);
 
@@ -52,6 +63,21 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
     rec.speakers?.forEach((s) => (m[s.id] = s));
     return m;
   }, [rec.speakers]);
+
+  const [activeIndex, setActiveIndex] = useState<number>(-1);
+  const [userScrolled, setUserScrolled] = useState(false);
+  const userScrollTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  // Click-to-seek: jump audio playback to a segment's start time
+  const handleSeek = useCallback(
+    (tSec: number) => {
+      if (audioRef?.current) {
+        audioRef.current.currentTime = tSec;
+        audioRef.current.play();
+      }
+    },
+    [audioRef]
+  );
 
   // Two independent tallies: words lost to fillers, sentences set aside as
   // off-topic. Counting fillers per sentence rather than per turn also keeps
@@ -72,9 +98,39 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
     return { fillerWords, smallTalk };
   }, [rec.segments]);
 
+  // Playback highlight: listen to timeupdate events and find the active segment
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio) return;
+    const onTimeUpdate = () => {
+      const current = audio.currentTime;
+      const idx = rec.segments.findIndex((seg, i) => {
+        const end = seg.endSec ?? rec.segments[i + 1]?.tSec ?? Infinity;
+        return seg.tSec <= current && current < end;
+      });
+      setActiveIndex(idx);
+    };
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    return () => audio.removeEventListener("timeupdate", onTimeUpdate);
+  }, [audioRef, rec.segments]);
+
+  // Auto-scroll to active segment, suppressed for 3s after manual scroll
+  const containerRef = useRef<HTMLDivElement>(null);
+  const handleManualScroll = useCallback(() => {
+    setUserScrolled(true);
+    clearTimeout(userScrollTimer.current);
+    userScrollTimer.current = setTimeout(() => setUserScrolled(false), 3000);
+  }, []);
+
+  useEffect(() => {
+    if (activeIndex >= 0 && !userScrolled) {
+      document.getElementById(`seg-${activeIndex}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeIndex, userScrolled]);
+
   // graceful fallback for any older records without diarized segments
   if (!rec.segments?.length) {
-    return <p className="whitespace-pre-wrap leading-7 text-[#cfd3f0]">{rec.transcript}</p>;
+    return <p className="whitespace-pre-wrap leading-7 text-fg/80">{rec.transcript}</p>;
   }
 
   return (
@@ -135,29 +191,65 @@ export default function TranscriptView({ rec }: { rec: Recording }) {
       {mode === "business" ? (
         <BusinessRecord text={rec.businessSummary} />
       ) : (
-        <div className="space-y-4">
+        <div ref={containerRef} className="space-y-4" onWheel={handleManualScroll} onTouchMove={handleManualScroll}>
           {rec.segments.map((seg, i) => {
             const sp = speakerMap[seg.speakerId] ?? { id: seg.speakerId, name: "Speaker", color: "#7c5cff" };
+            const isActive = activeIndex === i;
             return (
-              <div key={i} className="flex gap-3">
-                {/* avatar */}
+              <div
+                key={i}
+                id={`seg-${i}`}
+                onClick={() => handleSeek(seg.tSec)}
+                className={`flex gap-3 cursor-pointer transition-all ${isActive ? "bg-neon2/5 -mx-3 px-3 rounded-2xl" : ""}`}
+              >
+                {/* avatar — click to cycle color */}
                 <div className="flex flex-col items-center pt-0.5">
-                  <div
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white"
-                    style={{ background: `linear-gradient(135deg, ${sp.color}, ${sp.color}99)`, boxShadow: `0 6px 16px -6px ${sp.color}` }}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!onSpeakersChange) return;
+                      const idx = rec.speakers.findIndex((s) => s.id === sp.id);
+                      if (idx === -1) return;
+                      const cur = SPEAKER_COLORS.indexOf(sp.color);
+                      const next = SPEAKER_COLORS[(cur + 1) % SPEAKER_COLORS.length];
+                      const updated = rec.speakers.map((s, i) =>
+                        i === idx ? { ...s, color: next } : s
+                      );
+                      onSpeakersChange(updated);
+                    }}
+                    className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white transition-shadow cursor-pointer hover:scale-105 ${isActive ? "shadow-[0_0_20px_-4px]" : ""}`}
+                    style={{ background: `linear-gradient(135deg, ${sp.color}, ${sp.color}99)`, boxShadow: isActive ? `0 0 20px -4px ${sp.color}` : `0 6px 16px -6px ${sp.color}` }}
+                    aria-label="Change speaker color"
                   >
                     {initials(sp.name)}
-                  </div>
-                  {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-white/10" />}
+                  </button>
+                  {i < rec.segments.length - 1 && <span className="mt-1 w-px flex-1 bg-overlay/10" />}
                 </div>
 
                 {/* bubble(s) */}
                 <div className="min-w-0 flex-1 pb-1">
                   <div className="mb-1 flex items-baseline gap-2">
-                    <span className="text-[13px] font-semibold" style={{ color: sp.color }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!onSpeakersChange) return;
+                        const newName = prompt("Rename speaker:", sp.name);
+                        if (newName && newName !== sp.name) {
+                          const idx = rec.speakers.findIndex((s) => s.id === sp.id);
+                          if (idx === -1) return;
+                          const updated = rec.speakers.map((s, i) =>
+                            i === idx ? { ...s, name: newName } : s
+                          );
+                          onSpeakersChange(updated);
+                        }
+                      }}
+                      className="text-[13px] font-semibold hover:underline focus:outline-none"
+                      style={{ color: sp.color }}
+                      aria-label="Rename speaker"
+                    >
                       {sp.name}
-                    </span>
-                    <span className="font-mono text-[10.5px] text-muted">{fmtStamp(seg.tSec)}</span>
+                    </button>
+                    <span className="font-mono text-[10.5px] text-muted">{fmtDuration(seg.tSec)}</span>
                   </div>
 
                   {mode === "compare" ? (

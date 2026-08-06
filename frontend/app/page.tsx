@@ -27,7 +27,7 @@ export default function OverviewPage() {
 
       <div className="grid grid-cols-1 gap-5 mb-8 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map(({ label, value, Icon, tint }) => (
-          <div key={label} className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-6">
+          <div key={label} className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-6">
             <div className={`mb-4 grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br ${tint} text-white`}>
               <Icon className="w-5 h-5" />
             </div>
@@ -38,7 +38,7 @@ export default function OverviewPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_0.8fr] gap-6">
-        <div className="rounded-3xl border border-white/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-7">
           <div className="flex items-center justify-between mb-5">
             <h2 className="text-[15px] font-semibold">Recent activity</h2>
             <Link href="/recordings" className="text-xs text-neon2 hover:underline">
@@ -71,7 +71,7 @@ export default function OverviewPage() {
           )}
         </div>
 
-        <div className="rounded-3xl border border-white/[0.08] bg-gradient-to-br from-neon/15 to-neon2/5 backdrop-blur-xl shadow-card p-7 flex flex-col justify-between">
+        <div className="rounded-3xl border border-overlay/[0.08] bg-gradient-to-br from-neon/15 to-neon2/5 backdrop-blur-xl shadow-card p-7 flex flex-col justify-between">
           <div>
             <h2 className="text-[15px] font-semibold mb-2">Ready to transcribe?</h2>
             <p className="text-[13px] text-muted leading-relaxed">

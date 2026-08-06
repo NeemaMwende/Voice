@@ -9,6 +9,7 @@ aiofiles
 pyannote.audio
 torch
 torchaudio
+pyjwt[crypto]
 # Voice activity detection (github.com/snakers4/silero-vad) — see vad.py.
 silero-vad
 # Cosine clustering for the WeSpeaker re-clustering pass — see speaker_merge.py.

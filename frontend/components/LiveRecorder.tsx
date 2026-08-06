@@ -210,9 +210,9 @@ export default function LiveRecorder({
 
         {!live && (
           <>
-            <div className="text-lg font-semibold mb-1">Record live audio</div>
+            <div className="text-lg font-semibold mb-1">Record audio</div>
             <div className="text-[13px] text-muted mb-6 text-center">
-              Capture straight from your microphone — we transcribe as you talk.
+              Capture straight from your microphone — we transcribe it when you stop.
             </div>
             <button
               onClick={start}
@@ -259,7 +259,7 @@ export default function LiveRecorder({
             <div className="flex items-center gap-3">
               <button
                 onClick={pause}
-                className="grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-white/[0.06] text-white hover:bg-white/[0.12] transition-colors"
+                className="grid h-11 w-11 place-items-center rounded-full border border-overlay/15 bg-overlay/[0.06] text-fg hover:bg-overlay/[0.12] transition-colors"
                 aria-label={status === "paused" ? "Resume" : "Pause"}
               >
                 {status === "paused" ? <IconPlay className="h-4 w-4" /> : <IconPause className="h-4 w-4" />}

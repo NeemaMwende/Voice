@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useState } from "react";
+import { ReactNode, useRef, useState } from "react";
 import { Recording } from "@/context/AppContext";
 import { NoteSection } from "@/lib/notes";
 import {
@@ -24,8 +24,9 @@ import TranscriptView from "./TranscriptView";
  */
 const TABS = ["Notes", "Transcript", "SOP"] as const;
 
-export default function NotesViewer({ rec }: { rec: Recording }) {
+export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recording; audioUrl?: string; onRecChange?: (updated: Recording) => void }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Notes");
+  const audioRef = useRef<HTMLAudioElement>(null);
   const [checked, setChecked] = useState<Record<number, boolean>>({});
 
   const overview = rec.summary ?? [];
@@ -76,7 +77,7 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
 
   return (
     <div className="animate-fade flex h-full min-h-0 flex-col">
-      <div className="flex gap-1.5 bg-white/[0.04] p-1.5 rounded-xl mb-4 shrink-0">
+      <div className="flex gap-1.5 bg-overlay/[0.04] p-1.5 rounded-xl mb-4 shrink-0">
         {TABS.map((t) => (
           <button
             key={t}
@@ -84,7 +85,7 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
             className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-[13px] font-semibold rounded-lg transition-all ${
               tab === t
                 ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_6px_18px_-6px_#7c5cff]"
-                : "text-muted hover:text-white"
+                : "text-muted hover:text-fg"
             }`}
           >
             {t}
@@ -99,6 +100,10 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
           </button>
         ))}
       </div>
+
+      {audioUrl && (
+        <audio ref={audioRef} src={audioUrl} controls className="mb-4 w-full rounded-xl shrink-0" />
+      )}
 
       <div className="flex-1 min-h-0 overflow-auto pr-2 text-[15px] leading-7">
         {tab === "Notes" && (
@@ -197,7 +202,13 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
           </div>
         )}
 
-        {tab === "Transcript" && <TranscriptView rec={rec} />}
+        {tab === "Transcript" && (
+          <TranscriptView
+            rec={rec}
+            audioRef={audioRef}
+            onSpeakersChange={(speakers) => onRecChange?.({ ...rec, speakers })}
+          />
+        )}
 
         {/* Keyed on the recording so switching recordings resets the SOP tab's
             own state (draft edits, generation progress) instead of carrying it
@@ -208,7 +219,7 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
       {/* The SOP tab brings its own actions — copying "notes" from there would
           hand you the wrong document. */}
       {tab !== "SOP" && (
-        <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-white/[0.08]">
+        <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-overlay/[0.08]">
           <button
             onClick={copy}
             className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-gradient-to-br from-neon to-neon2 text-white hover:-translate-y-0.5 transition-transform"
@@ -217,7 +228,7 @@ export default function NotesViewer({ rec }: { rec: Recording }) {
           </button>
           <button
             onClick={download}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-white/[0.06] border border-white/10 hover:bg-white/[0.1] transition-colors"
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-overlay/[0.06] border border-overlay/10 hover:bg-overlay/[0.1] transition-colors"
           >
             <IconDownload className="w-4 h-4" /> Download
           </button>

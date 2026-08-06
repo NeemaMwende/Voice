@@ -27,7 +27,7 @@ export default function Toaster() {
 
   return (
     <div
-      className={`fixed bottom-6 left-1/2 z-50 flex items-center gap-2.5 rounded-xl border border-white/10 bg-[#141428]/95 px-5 py-3 text-sm shadow-card transition-all duration-300 ${
+      className={`fixed bottom-6 left-1/2 z-50 flex items-center gap-2.5 rounded-xl border border-overlay/10 bg-toast px-5 py-3 text-sm shadow-card transition-all duration-300 ${
         msg ? "translate-y-0 opacity-100" : "translate-y-24 opacity-0"
       }`}
       style={{ transform: `translateX(-50%) ${msg ? "translateY(0)" : "translateY(6rem)"}` }}

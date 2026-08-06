@@ -1,0 +1,28 @@
+# Local Keycloak for DAXA.
+# Start:    docker compose -f docker-compose.keycloak.yml up -d
+# Stop:     docker compose -f docker-compose.keycloak.yml down
+# Console:  http://localhost:8080  (admin / admin)
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7
+    command: start-dev --import-realm
+    restart: unless-stopped
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      # Cap the heap — this machine is memory-constrained (dev box, not prod).
+      JAVA_OPTS_APPEND: "-Xms64m -Xmx512m"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Realm + seed user import on first boot (Keycloak 25+ auto-imports
+      # files dropped in /opt/keycloak/data/import).
+      - ./keycloak/realm-daxa.json:/opt/keycloak/data/import/realm-daxa.json:ro
+    healthcheck:
+      # The official image has no curl/wget, so probe the management endpoint
+      # (:9000/health/ready) with bash + /dev/tcp instead.
+      test: ["CMD", "bash", "-c", 'exec 3<>/dev/tcp/localhost/9000; printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; cat <&3 | grep -q "200 OK"']
+      interval: 10s
+      timeout: 5s
+      retries: 12

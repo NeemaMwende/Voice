@@ -12,7 +12,7 @@ Connection is read from DATABASE_URL, or assembled from PG_* env vars
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import BigInteger, Integer, Text, create_engine, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -66,6 +66,7 @@ class Recording(Base):
     insights: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     outline: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     tags: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    peaks: Mapped[List[Any]] = mapped_column(JSONB, default=list)  # waveform envelope 0..1
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to the exact JSON shape the frontend's Recording expects."""
@@ -90,6 +91,7 @@ class Recording(Base):
             "insights": self.insights or [],
             "outline": self.outline or [],
             "tags": self.tags or [],
+            "peaks": self.peaks or [],
         }
 
     @classmethod
@@ -114,12 +116,25 @@ class Recording(Base):
             insights=data.get("insights") or [],
             outline=data.get("outline") or [],
             tags=data.get("tags") or [],
+            peaks=data.get("peaks") or [],
         )
 
 
-# Columns added after the table first shipped, with the DDL to backfill them.
-# ``create_all`` only creates missing *tables*, so existing installs need these
-# filled in explicitly.
+def _column_type(conn, name: str) -> Optional[str]:
+    """Current data_type of a recordings column, or None if it doesn't exist."""
+    row = conn.execute(
+        text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = 'recordings' AND column_name = :n"
+        ),
+        {"n": name},
+    ).first()
+    return row[0] if row else None
+
+
+# Columns with a non-list shape (or added after the list columns shipped),
+# with the DDL to backfill them. ``create_all`` only creates missing *tables*,
+# so existing installs need these filled in explicitly.
 _JSON_LIST = "JSONB NOT NULL DEFAULT '[]'::jsonb"
 _JSON_OBJECT = "JSONB NOT NULL DEFAULT '{}'::jsonb"
 _TEXT = "TEXT NOT NULL DEFAULT ''"
@@ -134,12 +149,63 @@ _ADDED_COLUMNS: Dict[str, str] = {
 
 
 def init_db() -> None:
-    """Create the recordings table if it doesn't already exist, then migrate."""
+    """Create the recordings table if it doesn't already exist.
+
+    ``create_all`` only creates missing *tables* — a recordings table created
+    before the JSONB columns existed is silently left with the old schema, and
+    every subsequent query fails. The steps below are idempotent, so this
+    self-heals that drift on each startup:
+
+      * add the JSONB payload columns (speakers, segments, summary, key_points,
+        tags, action_items, insights, outline, peaks)
+      * convert legacy column types to the current model's (epoch-ms bigint
+        ``created_at``, integer ``duration_sec``)
+      * drop legacy columns the current model doesn't manage (source, status,
+        updated_at) — they carry no data the app reads and would block inserts
+    """
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
+        for col in (
+            "speakers",
+            "segments",
+            "summary",
+            "key_points",
+            "tags",
+            "action_items",
+            "insights",
+            "outline",
+            "peaks",
+        ):
+            conn.execute(
+                text(
+                    f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS {col} "
+                    "JSONB NOT NULL DEFAULT '[]'::jsonb"
+                )
+            )
         for column, ddl in _ADDED_COLUMNS.items():
             conn.execute(
                 text(
                     f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS {column} {ddl}"
                 )
             )
+        if _column_type(conn, "created_at") == "timestamp with time zone":
+            # The legacy column carries a `DEFAULT now()` which cannot be cast
+            # to bigint; the current model has no server default, so drop it.
+            conn.execute(
+                text("ALTER TABLE recordings ALTER COLUMN created_at DROP DEFAULT")
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE recordings ALTER COLUMN created_at TYPE BIGINT "
+                    "USING (EXTRACT(EPOCH FROM created_at) * 1000)::bigint"
+                )
+            )
+        if _column_type(conn, "duration_sec") == "numeric":
+            conn.execute(
+                text(
+                    "ALTER TABLE recordings ALTER COLUMN duration_sec "
+                    "TYPE INTEGER USING duration_sec::integer"
+                )
+            )
+        for col in ("source", "status", "updated_at"):
+            conn.execute(text(f"ALTER TABLE recordings DROP COLUMN IF EXISTS {col}"))

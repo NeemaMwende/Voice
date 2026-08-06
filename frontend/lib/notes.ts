@@ -23,10 +23,16 @@ export type Segment = {
   speakerId: string;
   /** start offset in seconds */
   tSec: number;
+  /** end offset in seconds (for playback highlighting & seeking) */
+  endSec?: number;
   /** exactly what was said — fillers, stutters, background noise */
   raw: string;
   /** the same turn after noise + filler removal; every topic still present */
   clean: string;
+  /** mean of per-word model certainty (0..1); undefined on legacy rows */
+  confidence?: number | null;
+  /** per-word data from the backend; undefined on legacy rows */
+  words?: { start: number; end: number; text: string; p: number | null }[];
   /** cleaned business content only, with the small talk dropped */
   relevant?: string;
   /** per-sentence breakdown; absent on recordings made before this existed */
@@ -134,13 +140,6 @@ export type NoteContent = {
 };
 
 export function fmtDuration(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-/** mm:ss timestamp for a transcript segment */
-export function fmtStamp(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;

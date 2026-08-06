@@ -9,6 +9,10 @@ export type Recording = NoteContent & {
   sizeBytes: number;
   createdAt: number;
   audioUrl?: string;
+  /** Amplitude envelope (0..1, ~1000 buckets) for the waveform visual. */
+  peaks?: number[];
+  /** Time ranges where two speakers talked at once. */
+  overlaps?: { start: number; end: number }[];
 };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";

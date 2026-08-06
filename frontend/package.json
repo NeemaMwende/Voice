@@ -1,5 +1,5 @@
 {
-  "name": "echonotes",
+  "name": "daxa",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -10,9 +10,9 @@
   },
   "dependencies": {
     "next": "14.2.5",
+    "next-auth": "^4.24.15",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "reconnecting-websocket": "^4.4.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
