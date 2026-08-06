@@ -17,6 +17,8 @@ type TranscriptionSegment = {
   start: number;
   end: number;
   text: string;
+  confidence?: number | null;
+  words?: { start: number; end: number; text: string; p: number | null }[];
 };
 
 type TranscriptionResponse = {
@@ -27,6 +29,8 @@ type TranscriptionResponse = {
   summary?: string | null;
   key_points?: string[];
   audio_url?: string | null;
+  overlaps?: { start: number; end: number }[];
+  peaks?: number[] | null;
 };
 
 const WAVE_BARS = Array.from({ length: 44 });
@@ -64,6 +68,8 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     endSec: s.end,
     raw: s.text.trim(),
     clean: s.text.trim(),
+    confidence: s.confidence ?? null,
+    words: s.words ?? undefined,
   }));
 
   // AI-generated key points (Ollama). Fall back to metadata if unavailable.
@@ -102,6 +108,10 @@ function recordingFromResponse(response: TranscriptionResponse, src: Source): Re
     // Prefer the durable /media URL from the backend so playback survives a
     // reload; fall back to the local object URL if it wasn't returned.
     audioUrl: response.audio_url ? `${API_URL}${response.audio_url}` : src.url,
+    // waveform envelope + crosstalk ranges, persisted so the timeline can
+    // render without re-decoding the audio client-side.
+    peaks: response.peaks ?? [],
+    overlaps: response.overlaps ?? [],
   };
 }
 

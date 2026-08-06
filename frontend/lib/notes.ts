@@ -17,6 +17,10 @@ export type Segment = {
   raw: string;
   /** the same turn after noise + filler removal */
   clean: string;
+  /** mean of per-word model certainty (0..1); undefined on legacy rows */
+  confidence?: number | null;
+  /** per-word data from the backend; undefined on legacy rows */
+  words?: { start: number; end: number; text: string; p: number | null }[];
 };
 
 /** Shape of a transcription result, independent of the id/file metadata. */
