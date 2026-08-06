@@ -1,4 +1,4 @@
-# EchoNotes Backend
+# DAXA Backend
 
 Accepts an audio upload and returns a transcript split into **speaker-labeled
 segments**. Transcription is done by [faster-whisper]; speaker diarization by

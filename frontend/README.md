@@ -1,4 +1,4 @@
-# EchoNotes — Audio → Transcript → Notes
+# DAXA — Audio → Transcript → Notes
 
 A Next.js (App Router + TypeScript + Tailwind) dashboard for uploading audio,
 transcribing it, and generating structured notes. Dark + neon UI with animated
