@@ -22,8 +22,9 @@ from dotenv import load_dotenv
 
 load_dotenv()  # read backend/.env (HF_TOKEN, OLLAMA_URL, OLLAMA_MODEL, PG_*, …)
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
@@ -34,6 +35,7 @@ import diarization
 import progress
 import relevance
 import rewrite
+import sop as sop_writer
 import speaker_merge
 import summarization
 import vad
@@ -421,6 +423,11 @@ def health():
         "relevance_threshold": relevance.KEEP_THRESHOLD,
         "rewrite": rewrite.ENABLED,
         "rewrite_model": rewrite.MODEL,
+        # SOPs are generated on request, per recording — never as part of
+        # /transcribe. See sop.py.
+        "sop": sop_writer.ENABLED,
+        "sop_model": sop_writer.MODEL,
+        "sop_pdf": sop_writer.pdf_available(),
     }
 
 
@@ -648,6 +655,8 @@ def _run_transcription(
 # reload them after a refresh instead of losing everything from memory.
 # ---------------------------------------------------------------------------
 
+_NO_RECORDING = "Recording not found."
+
 
 @app.get("/recordings")
 def list_recordings() -> List[Dict[str, Any]]:
@@ -666,7 +675,7 @@ def get_recording(recording_id: str) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         row = session.get(db.Recording, recording_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Recording not found.")
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
         return row.to_dict()
 
 
@@ -678,6 +687,11 @@ def create_recording(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         existing = session.get(db.Recording, str(payload["id"]))
         if existing is not None:
+            # A re-save must not silently discard a generated SOP: the frontend's
+            # Recording only carries one if it happened to be loaded, and the SOP
+            # endpoints below are the authority on that field.
+            if not payload.get("sop") and existing.sop:
+                payload = {**payload, "sop": existing.sop}
             session.delete(existing)
             session.flush()
         row = db.Recording.from_dict(payload)
@@ -691,7 +705,7 @@ def delete_recording(recording_id: str) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         row = session.get(db.Recording, recording_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Recording not found.")
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
         audio_url = row.audio_url or ""
         session.delete(row)
         session.commit()
@@ -705,6 +719,131 @@ def delete_recording(recording_id: str) -> Dict[str, Any]:
             print(f"[media] could not delete {media_file}: {exc}")
 
     return {"status": "deleted", "id": recording_id}
+
+
+# ---------------------------------------------------------------------------
+# Standard Operating Procedures. Generated on request, one recording at a time —
+# never as part of /transcribe, because most conversations have no procedure in
+# them and the user is the one who decides. See sop.py.
+# ---------------------------------------------------------------------------
+
+
+def _load_recording(recording_id: str) -> Dict[str, Any]:
+    with db.SessionLocal() as session:
+        row = session.get(db.Recording, recording_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
+        return row.to_dict()
+
+
+def _store_sop(recording_id: str, document: Dict[str, Any]) -> Dict[str, Any]:
+    with db.SessionLocal() as session:
+        row = session.get(db.Recording, recording_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
+        row.sop = document
+        session.commit()
+        return dict(document)
+
+
+def _require_sop(recording_id: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    recording = _load_recording(recording_id)
+    document = recording.get("sop") or {}
+    if not document:
+        raise HTTPException(
+            status_code=404, detail="No SOP has been generated for this recording yet."
+        )
+    return recording, document
+
+
+@app.get("/recordings/{recording_id}/sop/assessment")
+def sop_assessment(recording_id: str) -> Dict[str, Any]:
+    """Whether this recording looks worth writing an SOP from.
+
+    Heuristic only — no model runs — so the UI can show it immediately and let
+    the user make the call. ``suitable: false`` is advice, not a refusal.
+    """
+    return sop_writer.assess(_load_recording(recording_id))
+
+
+@app.post("/recordings/{recording_id}/sop")
+def generate_sop(
+    recording_id: str, job_id: Optional[str] = Query(None)
+) -> Dict[str, Any]:
+    """Write (or rewrite) the SOP for a recording and persist it.
+
+    Minutes of local-model time, so it reports progress through the same
+    /progress/<job_id> channel the transcription uses. A 422 means the model read
+    the conversation and found no procedure in it to document — a real answer,
+    which the UI shows as-is.
+    """
+    recording = _load_recording(recording_id)
+    progress.start(job_id)
+    try:
+        document = sop_writer.generate(
+            recording,
+            on_progress=lambda frac, label: progress.update(
+                job_id, 5 + 90 * frac, "drafting", label
+            ),
+        )
+    except sop_writer.SopUnavailable as exc:
+        progress.finish(job_id, failed=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        progress.finish(job_id, failed=True)
+        raise
+
+    stored = _store_sop(recording_id, document)
+    progress.finish(job_id)
+    return stored
+
+
+@app.put("/recordings/{recording_id}/sop")
+def save_sop(recording_id: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Persist a user-edited SOP. Re-validated server-side; provenance is kept."""
+    _, existing = _require_sop(recording_id)
+    return _store_sop(recording_id, sop_writer.sanitize(payload, existing))
+
+
+@app.delete("/recordings/{recording_id}/sop")
+def discard_sop(recording_id: str) -> Dict[str, Any]:
+    """Throw the SOP away, leaving the recording itself untouched."""
+    _load_recording(recording_id)
+    _store_sop(recording_id, {})
+    return {"status": "deleted", "id": recording_id}
+
+
+@app.get("/recordings/{recording_id}/sop.txt")
+def download_sop_text(recording_id: str) -> Response:
+    recording, document = _require_sop(recording_id)
+    body = sop_writer.render_text(document, recording)
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{sop_writer.filename(document, "txt")}"'
+            )
+        },
+    )
+
+
+@app.get("/recordings/{recording_id}/sop.pdf")
+def download_sop_pdf(recording_id: str) -> Response:
+    recording, document = _require_sop(recording_id)
+    try:
+        body = sop_writer.render_pdf(document, recording)
+    except sop_writer.SopUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{sop_writer.filename(document, "pdf")}"'
+            )
+        },
+    )
 
 
 if __name__ == "__main__":

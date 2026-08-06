@@ -139,7 +139,8 @@ The server listens on `http://127.0.0.1:8000`. The frontend points at this via
 ## Endpoints
 
 - `GET /health` — model + diarization status, plus which relevance backend is
-  live (`relevance_backend`, `relevance_model`, `relevance_note`).
+  live (`relevance_backend`, `relevance_model`, `relevance_note`) and whether
+  SOP generation and its PDF export are available (`sop`, `sop_pdf`).
 - `POST /transcribe` (multipart `file`) — returns:
 
   ```json
@@ -152,6 +153,10 @@ The server listens on `http://127.0.0.1:8000`. The frontend points at this via
     "duration": 32.0
   }
   ```
+
+- `GET|POST /recordings`, `GET|DELETE /recordings/{id}` — saved recordings.
+- The SOP endpoints (`…/sop`, `…/sop.txt`, `…/sop.pdf`, `…/sop/assessment`) are
+  listed under [Standard Operating Procedures](#standard-operating-procedures-soppy).
 
 ## Configuration (env vars)
 
@@ -210,10 +215,10 @@ an SOP can be written from. Nothing is ever deleted — each pass adds a field, 
 every earlier tier is still there to show in the UI:
 
 ```
-turns → cleaning.py ──→ relevance.py ─────→ rewrite.py ──→ summarization.py
-        strip fillers   label each          repair the      notes + the
-        & split into    sentence business   wording of      business record
-        sentences       or smalltalk        what's left
+turns → cleaning.py ──→ relevance.py ─────→ rewrite.py ──→ summarization.py ──→ sop.py
+        strip fillers   label each          repair the      notes + the          the procedure
+        & split into    sentence business   wording of      business record      document, but
+        sentences       or smalltalk        what's left                          only on request
           ↓                  ↓                  ↓
         seg.clean         seg.relevant      seg.polished
 ```
@@ -315,6 +320,69 @@ keeps its original wording. The count of accepted rewrites is logged per run.
 | `REWRITE`       | `1`            | `0` skips the pass                        |
 | `REWRITE_MODEL` | `OLLAMA_MODEL` | model to rewrite with                     |
 | `REWRITE_CHARS` | `2500`         | characters of transcript per request      |
+
+## Standard Operating Procedures (`sop.py`)
+
+The end of the line for the text pipeline: the **business record** written by
+`summarization.summarize_business` is turned into a numbered SOP laid out like a
+company policy document.
+
+```
+1. PURPOSE      2. SCOPE      3. DEFINITIONS      4. PROCEDURE
+5. RESPONSIBILITIES      6. MONITORING AND ENFORCEMENT
+7. OPEN ITEMS AND REVIEW
+```
+
+**Nothing is generated automatically.** Most conversations are not procedural,
+and an SOP written from a chat about the weekend is worse than no SOP at all, so
+`/transcribe` never writes one — the user asks per recording, from the SOP tab.
+Two things inform that choice, and neither one blocks it:
+
+1. `GET …/sop/assessment` — a heuristic, no model, instant: how many business
+   words survived the small-talk pass, how many sentences were set aside, and
+   which tier the document would be written from. When it says `suitable: false`
+   the UI warns and offers "Generate anyway".
+2. the model's own veto — it is asked whether the source describes a repeatable
+   process at all, and `applicable: false` comes back as **HTTP 422** with its
+   reason, rather than a fabricated procedure.
+
+Generation is two model calls (the document's spine, then its body) because a
+small model asked for one large JSON object truncates mid-value and costs the
+whole document; a source longer than `SOP_SOURCE_CHARS` is condensed to
+procedural notes chunk by chunk first. Every generated string goes through the
+same invented-name guard as the notes, plus one more check that only applies
+here: a responsibility or definition whose label is a capitalised word found
+nowhere in the source is dropped, because a table row is exactly where a small
+model invents a person ("Priscilla — approves the credit limit").
+
+The `.txt` and `.pdf` are both rendered from the stored document, so an edit
+through `PUT` changes both. The PDF needs `reportlab`; without it the endpoint
+returns 503, the `.txt` still works, and `GET /health` reports
+`"sop_pdf": false` so the UI hides the button.
+
+| Var                | Default        | Purpose                                       |
+| ------------------ | -------------- | --------------------------------------------- |
+| `SOP`              | `1`            | `0` disables generation entirely               |
+| `SOP_MODEL`        | `OLLAMA_MODEL` | model to write the document with               |
+| `SOP_ORG`          | `Techno Brain` | organisation name in the document header       |
+| `SOP_CODE_PREFIX`  | `TBL.SOP`      | document-reference prefix                      |
+| `SOP_MIN_WORDS`    | `60`           | business words before it looks worthwhile      |
+| `SOP_MIN_RATIO`    | `0.25`         | business share of sentences, likewise          |
+| `SOP_SOURCE_CHARS` | `9000`         | source characters before a condensing pass runs |
+
+Endpoints, all keyed on a saved recording:
+
+| Method   | Path                                | Purpose                                  |
+| -------- | ----------------------------------- | ---------------------------------------- |
+| `GET`    | `/recordings/{id}/sop/assessment`   | is it worth an SOP? (no model runs)       |
+| `POST`   | `/recordings/{id}/sop?job_id=…`     | generate + store; 422 if there's no procedure |
+| `PUT`    | `/recordings/{id}/sop`              | save an edited document (re-validated)    |
+| `DELETE` | `/recordings/{id}/sop`              | discard it, keeping the recording         |
+| `GET`    | `/recordings/{id}/sop.txt`          | plain-text download                       |
+| `GET`    | `/recordings/{id}/sop.pdf`          | formatted PDF download                    |
+
+`job_id` is optional and reports through the same `/progress/{job_id}` channel
+the transcription uses, so the SOP tab can show a real progress bar.
 
 ## Notes
 

@@ -24,6 +24,9 @@ scipy
 # locally. sentencepiece is DeBERTa-v3's tokenizer and is not optional.
 transformers
 sentencepiece
+# PDF export for the generated SOPs (sop.py). Optional: without it the .txt
+# download still works and /health reports "sop_pdf": false.
+reportlab
 # Training-only, for build_dataset.py / finetune.py. Leave them out of a
 # deployment that only ever loads an already-trained checkpoint.
 datasets
