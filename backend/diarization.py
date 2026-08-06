@@ -4,6 +4,15 @@ Kept separate from transcription (main.py). Whisper produces the words;
 this module tells us *who* was speaking during each slice of time, and
 main.py stitches the two together.
 
+Diarization runs in two stages here:
+
+  1. pyannote decides where the speaker changes are and takes a first guess at
+     who is who, clustering short sliding-window embeddings.
+  2. speaker_merge.py re-checks that guess using embeddings of whole turns,
+     which are far more reliable, and folds together any labels that turn out
+     to be the same voice. This is what stops a two-person meeting coming back
+     with five speakers.
+
 Requires:
   * `pip install pyannote.audio torch torchaudio`
   * Accepting the model terms at
@@ -18,7 +27,11 @@ import subprocess
 import threading
 from typing import Dict, List, Optional, Tuple
 
-MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
+import numpy as np
+
+import speaker_merge
+
+MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote-community/speaker-diarization-community-1")
 
 # pyannote ingests 16 kHz mono audio. We decode to that ourselves (below).
 DIARIZE_SR = 16000
@@ -106,6 +119,17 @@ def is_available() -> bool:
     return _pipeline is not None
 
 
+def _embedding_model():
+    """The pipeline's own speaker-embedding model (WeSpeakerResNet34).
+
+    Borrowed rather than loaded separately: it is already in memory, and using
+    the very same model guarantees speaker_merge compares vectors in the
+    embedding space the pipeline clustered in. Returns None on any pyannote
+    version that doesn't expose it, which simply disables the merge pass.
+    """
+    return getattr(_pipeline, "_embedding", None)
+
+
 def unavailable_reason() -> Optional[str]:
     _load_pipeline()
     return _load_error
@@ -175,6 +199,10 @@ def diarize(
         if max_speakers and max_speakers > 0:
             params["max_speakers"] = int(max_speakers)
 
+    # Kept alongside the pipeline input: the merge pass re-embeds turns, which
+    # needs the samples themselves, on the same timeline the turns come back on.
+    merge_waveform: Optional[np.ndarray] = waveform
+
     audio_input: object
     if waveform is not None:
         import torch
@@ -187,7 +215,9 @@ def diarize(
         # Prefer decoding via ffmpeg (robust); fall back to letting pyannote
         # read the path directly if ffmpeg isn't available.
         try:
-            audio_input = _load_waveform(audio_path)
+            decoded = _load_waveform(audio_path)
+            audio_input = decoded
+            merge_waveform = decoded["waveform"].squeeze(0).numpy()
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             print(f"[diarization] ffmpeg decode failed, using path directly: {exc}")
             audio_input = audio_path
@@ -227,5 +257,16 @@ def diarize(
             overlaps.append({"start": float(segment.start), "end": float(segment.end)})
     except Exception as exc:  # noqa: BLE001
         print(f"[diarization] overlap computation skipped: {exc}")
+
+    # Second pass: re-check pyannote's speaker assignment with whole-turn
+    # embeddings and fold apart-but-identical voices back together. Skipped
+    # when the caller pinned an exact speaker count — they already know the
+    # answer, and merging could only take the count below what they asked for.
+    if not params.get("num_speakers"):
+        turns, merge = speaker_merge.merge_turns(
+            turns, merge_waveform, DIARIZE_SR, _embedding_model()
+        )
+        if merge is not None and merge.changed:
+            print(f"[speakers] WeSpeaker re-clustering: {merge.describe()}")
 
     return turns, overlaps

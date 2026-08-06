@@ -39,6 +39,66 @@ export type Segment = {
   sentences?: SentenceSpan[];
 };
 
+/** One `Term — meaning` entry in an SOP's definitions list. */
+export type SopDefinition = { term: string; meaning: string };
+
+/** One `Role — duty` entry in an SOP's responsibilities list. */
+export type SopResponsibility = { role: string; duty: string };
+
+/**
+ * A generated Standard Operating Procedure — the document the backend writes
+ * from the cleaned transcript (see `backend/sop.py`), laid out like a company
+ * policy: numbered parts, each with prose, bullets or `term — meaning` pairs.
+ *
+ * Present only on recordings the user asked for one on: most conversations
+ * aren't procedural, so this is normally absent. The .txt and .pdf downloads are
+ * rendered by the backend from this same object, so an edit here changes both.
+ */
+export type Sop = {
+  title: string;
+  /** derived document reference, e.g. TBL.SOP.CLIENT.4A2F */
+  code: string;
+  purpose: string;
+  scope: string[];
+  definitions: SopDefinition[];
+  /** the procedure itself — one entry per stage of the work */
+  sections: NoteSection[];
+  responsibilities: SopResponsibility[];
+  monitoring: string;
+  /** questions, blockers and decisions the conversation left open */
+  openItems: string[];
+  status?: string;
+  organisation?: string;
+  /** which tier it was written from: the business record or the transcript */
+  source?: string;
+  model?: string;
+  generatedAt?: number;
+  edited?: boolean;
+  editedAt?: number;
+};
+
+/**
+ * The backend's read on whether a recording is worth an SOP — a word count and
+ * a small-talk tally, no model involved. `suitable` is advice only: the user can
+ * always generate anyway, which is the whole point of the conditional flow.
+ */
+export type SopAssessment = {
+  suitable: boolean;
+  reason: string;
+  /** false when SOP generation is switched off server-side */
+  available: boolean;
+  /** whether reportlab is installed, i.e. whether the PDF download works */
+  pdf: boolean;
+  businessWords: number;
+  businessRatio: number;
+  smallTalk: number;
+  sentences: number;
+  source: string;
+  hasRecord: boolean;
+  hasSop: boolean;
+  model: string;
+};
+
 /**
  * Shape of a transcription result, independent of the id/file metadata.
  *
@@ -54,6 +114,13 @@ export type NoteContent = {
   segments: Segment[];
   /** overview — the "what was this about" paragraph(s) */
   summary: NoteSection[];
+  /**
+   * The business record: prose paragraphs the model extracted from the cleaned
+   * transcript, covering the process, steps, rules, figures and decisions. This
+   * is what the SOP gets generated from, and what the Transcript tab shows under
+   * "Business only" — it is a written account, not a transcript.
+   */
+  businessSummary?: string;
   /** key points */
   key: string[];
   actionItems?: string[];
@@ -61,6 +128,13 @@ export type NoteContent = {
   insights?: NoteSection[];
   /** chronological topic-by-topic breakdown of the conversation */
   outline?: NoteSection[];
+  /**
+   * The Standard Operating Procedure, once the user has asked for one. Absent
+   * on every recording nobody generated one for — which is most of them. Test
+   * it with `hasSop` from ./sop, never for truthiness: the stored column
+   * defaults to an empty object.
+   */
+  sop?: Sop | null;
   tags: string[];
   durationSec: number;
 };

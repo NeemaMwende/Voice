@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
 import { fmtDuration, fmtSize } from "@/lib/notes";
+import { hasSop } from "@/lib/sop";
 import PageHeader from "@/components/PageHeader";
 import { IconPlay, IconSearch, IconTrash, IconWave, IconUpload } from "@/components/icons";
 
@@ -70,6 +71,16 @@ export default function RecordingsPage() {
                   </div>
                 </Link>
                 <div className="hidden sm:flex flex-wrap gap-1.5 justify-end max-w-[220px]">
+                  {/* Only the recordings somebody generated a procedure for carry
+                      this — it's how you spot them in a long library. */}
+                  {hasSop(r.sop) && (
+                    <span
+                      title={r.sop.title}
+                      className="text-[10.5px] px-2 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/25"
+                    >
+                      SOP
+                    </span>
+                  )}
                   {r.tags.map((t) => (
                     <span key={t} className="text-[10.5px] px-2 py-0.5 rounded-full bg-neon2/10 text-neon2 border border-neon2/20">
                       {t}

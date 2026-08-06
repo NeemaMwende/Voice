@@ -12,14 +12,17 @@ import {
   IconSparkle,
 } from "./icons";
 import { toast } from "./Toast";
+import SopViewer from "./SopViewer";
+import { hasSop } from "@/lib/sop";
 import TranscriptView from "./TranscriptView";
 
 /**
- * Two tabs, deliberately: "Notes" is the derived material only — overview, key
- * points, insights, action items and the outline — while "Transcript" is the
- * only place the verbatim transcription appears.
+ * Three tabs, deliberately: "Notes" is the derived material only — overview, key
+ * points, insights, action items and the outline — "Transcript" is the only place
+ * the verbatim transcription appears, and "SOP" is the formal procedure document,
+ * which exists only for the recordings somebody asked for one on.
  */
-const TABS = ["Notes", "Transcript"] as const;
+const TABS = ["Notes", "Transcript", "SOP"] as const;
 
 export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recording; audioUrl?: string; onRecChange?: (updated: Recording) => void }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Notes");
@@ -79,13 +82,21 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`flex-1 py-2.5 text-[13px] font-semibold rounded-lg transition-all ${
+            className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-[13px] font-semibold rounded-lg transition-all ${
               tab === t
                 ? "bg-gradient-to-br from-neon to-neon2 text-white shadow-[0_6px_18px_-6px_#7c5cff]"
                 : "text-muted hover:text-fg"
             }`}
           >
             {t}
+            {/* A dot only on the SOP tab, and only once one exists — otherwise the
+                tab would advertise a document that hasn't been generated. */}
+            {t === "SOP" && hasSop(rec.sop) && (
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${tab === t ? "bg-white" : "bg-ok"}`}
+                title="An SOP has been generated for this recording"
+              />
+            )}
           </button>
         ))}
       </div>
@@ -95,7 +106,7 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
       )}
 
       <div className="flex-1 min-h-0 overflow-auto pr-2 text-[15px] leading-7">
-        {tab === "Notes" ? (
+        {tab === "Notes" && (
           <div className="space-y-7">
             {!hasNotes && (
               <p className="text-[13.5px] text-muted">
@@ -189,29 +200,40 @@ export default function NotesViewer({ rec, audioUrl, onRecChange }: { rec: Recor
               </div>
             )}
           </div>
-        ) : (
+        )}
+
+        {tab === "Transcript" && (
           <TranscriptView
             rec={rec}
             audioRef={audioRef}
             onSpeakersChange={(speakers) => onRecChange?.({ ...rec, speakers })}
           />
         )}
+
+        {/* Keyed on the recording so switching recordings resets the SOP tab's
+            own state (draft edits, generation progress) instead of carrying it
+            across to a different document. */}
+        {tab === "SOP" && <SopViewer key={rec.id} rec={rec} />}
       </div>
 
-      <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-overlay/[0.08]">
-        <button
-          onClick={copy}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-gradient-to-br from-neon to-neon2 text-white hover:-translate-y-0.5 transition-transform"
-        >
-          <IconCopy className="w-4 h-4" /> Copy notes
-        </button>
-        <button
-          onClick={download}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-overlay/[0.06] border border-overlay/10 hover:bg-overlay/[0.1] transition-colors"
-        >
-          <IconDownload className="w-4 h-4" /> Download
-        </button>
-      </div>
+      {/* The SOP tab brings its own actions — copying "notes" from there would
+          hand you the wrong document. */}
+      {tab !== "SOP" && (
+        <div className="flex gap-2.5 shrink-0 mt-4 pt-4 border-t border-overlay/[0.08]">
+          <button
+            onClick={copy}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-gradient-to-br from-neon to-neon2 text-white hover:-translate-y-0.5 transition-transform"
+          >
+            <IconCopy className="w-4 h-4" /> Copy notes
+          </button>
+          <button
+            onClick={download}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-[13px] font-semibold bg-overlay/[0.06] border border-overlay/10 hover:bg-overlay/[0.1] transition-colors"
+          >
+            <IconDownload className="w-4 h-4" /> Download
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,26 +3,29 @@
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
 import { fmtDuration } from "@/lib/notes";
+import { hasSop } from "@/lib/sop";
 import PageHeader from "@/components/PageHeader";
-import { IconWave, IconClock, IconNotes, IconUpload, IconPlay } from "@/components/icons";
+import { IconWave, IconClock, IconNotes, IconUpload, IconPlay, IconDoc } from "@/components/icons";
 
 export default function OverviewPage() {
   const { recordings } = useApp();
 
   const totalSec = recordings.reduce((a, r) => a + r.durationSec, 0);
   const totalNotes = recordings.reduce((a, r) => a + r.summary.length + r.key.length, 0);
+  const totalSops = recordings.filter((r) => hasSop(r.sop)).length;
 
   const stats = [
     { label: "Recordings", value: recordings.length, Icon: IconWave, tint: "from-neon to-neon2" },
     { label: "Minutes transcribed", value: Math.round(totalSec / 60), Icon: IconClock, tint: "from-neon2 to-ok" },
     { label: "Notes generated", value: totalNotes, Icon: IconNotes, tint: "from-neon3 to-neon" },
+    { label: "SOPs drafted", value: totalSops, Icon: IconDoc, tint: "from-warn to-neon3" },
   ];
 
   return (
     <div>
       <PageHeader title="Overview" subtitle="Your transcription workspace at a glance." />
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-8">
+      <div className="grid grid-cols-1 gap-5 mb-8 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map(({ label, value, Icon, tint }) => (
           <div key={label} className="rounded-3xl border border-overlay/[0.08] bg-panel backdrop-blur-xl shadow-card p-6">
             <div className={`mb-4 grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br ${tint} text-white`}>

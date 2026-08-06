@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
 import { fmtDuration } from "@/lib/notes";
+import { hasSop } from "@/lib/sop";
 import PageHeader from "@/components/PageHeader";
 import NotesViewer from "@/components/NotesViewer";
 import { IconNotes, IconUpload } from "@/components/icons";
@@ -88,6 +89,11 @@ export default function NotesPage() {
                 {new Date(r.createdAt).toLocaleDateString()} · {fmtDuration(r.durationSec)}
               </div>
               <div className="flex flex-wrap gap-1.5 mt-2">
+                {hasSop(r.sop) && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/25">
+                    SOP
+                  </span>
+                )}
                 {r.tags.slice(0, 2).map((t) => (
                   <span key={t} className="text-[10px] px-2 py-0.5 rounded-full bg-neon2/10 text-neon2 border border-neon2/20">
                     {t}
