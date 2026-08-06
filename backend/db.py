@@ -57,6 +57,7 @@ class Recording(Base):
     summary: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     key_points: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     tags: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    peaks: Mapped[List[Any]] = mapped_column(JSONB, default=list)  # waveform envelope 0..1
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to the exact JSON shape the frontend's Recording expects."""
@@ -74,6 +75,7 @@ class Recording(Base):
             "summary": self.summary or [],
             "key": self.key_points or [],
             "tags": self.tags or [],
+            "peaks": self.peaks or [],
         }
 
     @classmethod
@@ -93,6 +95,7 @@ class Recording(Base):
             summary=data.get("summary") or [],
             key_points=data.get("key") or [],
             tags=data.get("tags") or [],
+            peaks=data.get("peaks") or [],
         )
 
 
@@ -125,7 +128,7 @@ def init_db() -> None:
     """
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
-        for col in ("speakers", "segments", "summary", "key_points", "tags"):
+        for col in ("speakers", "segments", "summary", "key_points", "tags", "peaks"):
             conn.execute(
                 text(
                     f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS {col} "

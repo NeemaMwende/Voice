@@ -9,3 +9,4 @@ aiofiles
 pyannote.audio
 torch
 torchaudio
+pyjwt[crypto]

@@ -1,0 +1,43 @@
+{
+  "realm": "daxa",
+  "enabled": true,
+  "displayName": "DAXA",
+  "registrationAllowed": true,
+  "resetPasswordAllowed": true,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "daxa-web",
+      "name": "DAXA Web",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "daxa-web-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*",
+        "http://localhost:3007/*",
+        "http://127.0.0.1:3007/*"
+      ],
+      "webOrigins": ["+"]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "email": "demo@daxa.local",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo1234",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

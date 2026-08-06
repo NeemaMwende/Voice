@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 MODEL_ID = os.environ.get("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
 
@@ -118,8 +118,13 @@ def diarize(
     num_speakers: Optional[int] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
-) -> List[Dict[str, object]]:
-    """Return speaker turns as ``[{"start", "end", "speaker"}]`` sorted by start.
+) -> Tuple[List[Dict[str, object]], List[Dict[str, float]]]:
+    """Return ``(turns, overlaps)``.
+
+    ``turns``: ``[{"start", "end", "speaker"}]`` sorted by start.
+    ``overlaps``: ``[{"start", "end"}]`` — time ranges where pyannote detected
+    two speakers talking at once (crosstalk), best-effort; empty if the
+    pipeline didn't emit overlapping regions.
 
     When the number of speakers is known (e.g. a 2-person interview), pass
     ``num_speakers`` — pyannote otherwise estimates it and can over-split a
@@ -171,4 +176,18 @@ def diarize(
             }
         )
     turns.sort(key=lambda t: t["start"])
-    return turns
+
+    # Crosstalk regions: time ranges where ≥2 speakers were active at once.
+    # On pyannote 3.x (installed: 3.2.0) the pipeline returns an Annotation
+    # directly, and Annotation.get_overlap() yields the intersections. On 4.x
+    # the exclusive track is non-overlapping by construction, so this comes
+    # back empty — the full ``speaker_diarization`` track would be the source
+    # there. Best-effort: never let overlap computation break diarization.
+    overlaps: List[Dict[str, float]] = []
+    try:
+        for segment in annotation.get_overlap():
+            overlaps.append({"start": float(segment.start), "end": float(segment.end)})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[diarization] overlap computation skipped: {exc}")
+
+    return turns, overlaps

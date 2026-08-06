@@ -1,4 +1,4 @@
-"""EchoNotes transcription backend.
+"""DAXA transcription backend.
 
 Whisper (faster-whisper) does the transcription with word-level timestamps;
 pyannote (see diarization.py) says who was speaking when. We overlap the two
@@ -14,21 +14,25 @@ os.environ["MKL_THREADING_LAYER"] = "sequential"
 
 import asyncio
 import concurrent.futures
+import subprocess
 import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from dotenv import load_dotenv
 
 load_dotenv()  # read backend/.env (HF_TOKEN, OLLAMA_URL, OLLAMA_MODEL, PG_*, …)
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
+import auth
 import diarization
 import summarization
 import db
@@ -43,10 +47,20 @@ PARAGRAPH_GAP_SEC = float(os.environ.get("PARAGRAPH_GAP_SEC", "2.0"))
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "media"))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="EchoNotes Transcription Backend")
+app = FastAPI(title="DAXA Transcription Backend")
+
+# Locked to the frontend origins instead of "*" now that the API carries auth.
+FRONTEND_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "FRONTEND_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3007,http://127.0.0.1:3007",
+    ).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=FRONTEND_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -92,11 +106,34 @@ _progress_store: Dict[str, dict] = {}
 _inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
+class Word(BaseModel):
+    """One transcribed word with the model's self-reported probability.
+
+    ``p`` is faster-whisper's per-word probability — the model's *certainty*,
+    not verified accuracy. None means the value wasn't produced (e.g. the
+    segment-level fallback path).
+    """
+
+    start: float
+    end: float
+    text: str
+    p: Optional[float] = None
+
+
+class Overlap(BaseModel):
+    """Time range where diarization detected two speakers talking at once."""
+
+    start: float
+    end: float
+
+
 class SpeakerSegment(BaseModel):
     speaker: str
     start: float
     end: float
     text: str
+    confidence: Optional[float] = None  # mean of per-word p; None = unknown
+    words: Optional[List[Word]] = None
 
 
 class TranscriptionResponse(BaseModel):
@@ -107,6 +144,8 @@ class TranscriptionResponse(BaseModel):
     summary: Optional[str] = None
     key_points: List[str] = []
     audio_url: Optional[str] = None
+    overlaps: List[Overlap] = []
+    peaks: Optional[List[float]] = None  # amplitude envelope (0..1), ~1000 buckets
 
 
 def save_upload(upload_file: UploadFile) -> tuple[str, str]:
@@ -123,6 +162,51 @@ def save_upload(upload_file: UploadFile) -> tuple[str, str]:
     return str(dest), f"/media/{media_name}"
 
 
+def compute_peaks(audio_path: str, buckets: int = 1000) -> Optional[List[float]]:
+    """Amplitude envelope (0..1) for a waveform visual.
+
+    Decodes with ffmpeg to 4 kHz mono s16 — 4 kHz is plenty for a visual
+    envelope and keeps even a 1-hour file to ~28 MB in memory. Bucket-wise
+    peak amplitude, normalized to the loudest bucket. Best-effort: returns
+    None on any failure so the UI can fall back to speaker lanes only.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-threads", "1",
+                "-i", audio_path,
+                "-f", "s16le", "-acodec", "pcm_s16le",
+                "-ac", "1", "-ar", "4000",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=300,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"[peaks] ffmpeg decode failed, skipping peaks: {exc}")
+        return None
+
+    samples = np.frombuffer(proc.stdout, dtype=np.int16)
+    if samples.size == 0:
+        return None
+    env = np.abs(samples.astype(np.float32)) / 32768.0
+    chunk = max(1, env.size // buckets)
+    n = env.size // chunk
+    if n == 0:
+        return [round(float(env.max()), 4)]
+    trimmed = env[: n * chunk].reshape(n, chunk).max(axis=1)
+    peak = float(trimmed.max()) or 1.0
+    return [round(float(v / peak), 4) for v in trimmed]
+
+
+def mean_confidence(words: List[Dict[str, Any]]) -> Optional[float]:
+    """Mean of the known per-word probabilities; None if none are known."""
+    probs = [w["p"] for w in words if w.get("p") is not None]
+    return round(sum(probs) / len(probs), 4) if probs else None
+
+
 def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
     """Collect word-level timings; fall back to segment-level if unavailable."""
     words: List[Dict[str, Any]] = []
@@ -133,11 +217,13 @@ def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
                 text = getattr(word, "word", "")
                 if not text:
                     continue
+                p = getattr(word, "probability", None)
                 words.append(
                     {
                         "start": float(getattr(word, "start", 0.0) or 0.0),
                         "end": float(getattr(word, "end", 0.0) or 0.0),
                         "text": text,
+                        "p": float(p) if p is not None else None,
                     }
                 )
         else:
@@ -148,6 +234,7 @@ def flatten_words(raw_segments: List[Any]) -> List[Dict[str, Any]]:
                         "start": float(getattr(segment, "start", 0.0) or 0.0),
                         "end": float(getattr(segment, "end", 0.0) or 0.0),
                         "text": text,
+                        "p": None,
                     }
                 )
     return words
@@ -191,6 +278,7 @@ def merge_words_with_speakers(
         if segments and segments[-1]["speaker"] == speaker:
             segments[-1]["text"] += word["text"]
             segments[-1]["end"] = word["end"]
+            segments[-1]["words"].append(word)
         else:
             segments.append(
                 {
@@ -198,11 +286,14 @@ def merge_words_with_speakers(
                     "start": word["start"],
                     "end": word["end"],
                     "text": word["text"],
+                    "words": [word],
+                    "confidence": None,
                 }
             )
 
     for seg in segments:
         seg["text"] = seg["text"].strip()
+        seg["confidence"] = mean_confidence(seg["words"])
     return [seg for seg in segments if seg["text"]]
 
 
@@ -227,6 +318,8 @@ def consolidate_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             joiner = "\n\n" if gap > PARAGRAPH_GAP_SEC else " "
             prev["text"] = f"{prev['text']}{joiner}{text}"
             prev["end"] = float(segment["end"])
+            prev["words"] = (prev.get("words") or []) + (segment.get("words") or []) or None
+            prev["confidence"] = mean_confidence(prev["words"])
         else:
             consolidated.append(
                 {
@@ -234,6 +327,8 @@ def consolidate_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                     "start": float(segment["start"]),
                     "end": float(segment["end"]),
                     "text": text,
+                    "words": segment.get("words") or None,
+                    "confidence": segment.get("confidence"),
                 }
             )
     return consolidated
@@ -254,12 +349,28 @@ def build_default_speaker_segments(raw_segments: List[Any]) -> List[Dict[str, An
             continue
         start = float(getattr(segment, "start", 0.0))
         end = float(getattr(segment, "end", start))
+        seg_words: List[Dict[str, Any]] = []
+        for word in getattr(segment, "words", None) or []:
+            w_text = getattr(word, "word", "")
+            if not w_text:
+                continue
+            p = getattr(word, "probability", None)
+            seg_words.append(
+                {
+                    "start": float(getattr(word, "start", 0.0) or 0.0),
+                    "end": float(getattr(word, "end", 0.0) or 0.0),
+                    "text": w_text,
+                    "p": float(p) if p is not None else None,
+                }
+            )
         result.append(
             {
                 "speaker": "Speaker 1",
                 "start": start,
                 "end": end,
                 "text": text,
+                "words": seg_words or None,
+                "confidence": mean_confidence(seg_words),
             }
         )
     return result
@@ -281,10 +392,15 @@ def _transcribe_with_progress(
     num_speakers: Optional[int],
     audio_url: str,
     progress_id: str,
+    hotwords: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run full transcription pipeline in a background thread, reporting progress."""
     try:
         _progress_store[progress_id] = {"pct": 1, "status": "transcribing"}
+
+        # Amplitude envelope for the waveform visual — cheap ffmpeg pass,
+        # independent of whisper/diarization so it always works.
+        peaks = compute_peaks(audio_path)
 
         segments, info = model.transcribe(
             audio_path,
@@ -293,6 +409,7 @@ def _transcribe_with_progress(
             condition_on_previous_text=False,
             word_timestamps=True,
             vad_filter=USE_VAD,
+            hotwords=hotwords or None,
         )
         raw_segments: list[Any] = []
         for seg in segments:
@@ -309,8 +426,9 @@ def _transcribe_with_progress(
         _progress_store[progress_id] = {"pct": 99, "status": "diarizing"}
 
         # Diarize + merge; fall back to single-speaker grouping if unavailable.
+        overlaps: List[Dict[str, Any]] = []
         try:
-            turns = diarization.diarize(audio_path, num_speakers=num_speakers)
+            turns, overlaps = diarization.diarize(audio_path, num_speakers=num_speakers)
         except diarization.DiarizationUnavailable as exc:
             print(f"[diarization] unavailable: {exc}")
             turns = []
@@ -344,6 +462,8 @@ def _transcribe_with_progress(
             summary=summary_text,
             key_points=key_points,
             audio_url=audio_url,
+            overlaps=[Overlap(**overlap) for overlap in overlaps],
+            peaks=peaks,
         )
 
         _progress_store[progress_id] = {"pct": 100, "status": "complete", "result": response.model_dump()}
@@ -361,6 +481,7 @@ def _transcribe_with_progress(
 async def transcribe(
     file: UploadFile = File(...),
     num_speakers: Optional[int] = Form(None),
+    hotwords: Optional[str] = Form(None),
 ):
     if not (file.content_type or "").startswith("audio/"):
         raise HTTPException(status_code=400, detail="Upload a valid audio file.")
@@ -377,6 +498,7 @@ async def transcribe(
         num_speakers,
         audio_url,
         progress_id,
+        hotwords,
     )
 
     return {"progress_id": progress_id}
@@ -418,7 +540,10 @@ def get_recording(recording_id: str) -> Dict[str, Any]:
 
 
 @app.post("/recordings")
-def create_recording(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+def create_recording(
+    payload: Dict[str, Any] = Body(...),
+    _user: dict = Depends(auth.get_current_user),
+) -> Dict[str, Any]:
     """Insert (or replace) a recording. Idempotent on id so re-saves are safe."""
     if not payload.get("id"):
         raise HTTPException(status_code=400, detail="Recording 'id' is required.")
@@ -434,7 +559,10 @@ def create_recording(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
 
 @app.delete("/recordings/{recording_id}")
-def delete_recording(recording_id: str) -> Dict[str, Any]:
+def delete_recording(
+    recording_id: str,
+    _user: dict = Depends(auth.get_current_user),
+) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         row = session.get(db.Recording, recording_id)
         if row is None:
