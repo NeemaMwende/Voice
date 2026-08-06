@@ -5,12 +5,21 @@ import { usePathname } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import { IconMic, IconMenu, IconX } from "@/components/icons";
 
+// Routes that render full-screen without the app nav chrome (auth pages).
+// /login is a real sign-in door again — both auth pages share the chamber.
+const BARE_ROUTES = ["/signup", "/login"];
+
 export default function Shell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
   // Close drawer on route change — prevents it staying open over the new page
   useEffect(() => setOpen(false), [pathname]);
+
+  // Auth pages get no sidebar/top bar — just the centered content.
+  if (BARE_ROUTES.some((r) => pathname === r || pathname.startsWith(r + "/"))) {
+    return <div className="relative z-10 min-h-screen">{children}</div>;
+  }
 
   return (
     <div className="relative z-10 flex min-h-screen">
@@ -27,7 +36,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           <div className="w-8 h-8 rounded-xl grid place-items-center bg-gradient-to-br from-neon to-neon2 shadow-[0_0_16px_rgba(124,92,255,0.5)]">
             <IconMic className="w-4 h-4 text-white" />
           </div>
-          <span className="text-sm font-bold tracking-tight">EchoNotes</span>
+          <span className="text-sm font-bold tracking-tight">DAXA</span>
         </div>
       </header>
 

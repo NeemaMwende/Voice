@@ -72,3 +72,48 @@ audio {
 audio::-webkit-media-controls-panel {
   background: var(--audio);
 }
+
+/* ── Listening Chamber chrome ───────────────────────────────────────
+   Full-screen hologram atmosphere for the auth pages: a static scanline
+   film, one slow drifting light band, and (via arbitrary Tailwind values)
+   the vignette + top light-line. All decorative and pointer-events-free. */
+.scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.028) 0px,
+    rgba(255, 255, 255, 0.028) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+}
+
+@keyframes scanline-drift {
+  0% {
+    transform: translateY(-140px);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+.scanline-band {
+  position: absolute;
+  inset-inline: 0;
+  height: 140px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(124, 92, 255, 0.05),
+    rgba(0, 229, 255, 0.06),
+    transparent
+  );
+  animation: scanline-drift 11s linear infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scanline-band {
+    animation: none;
+    opacity: 0.4;
+  }
+}

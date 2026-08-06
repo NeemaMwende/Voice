@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { IconGrid, IconUpload, IconWave, IconNotes, IconMic, IconSettings } from "./icons";
+import { useSession, signOut } from "next-auth/react";
+import { IconGrid, IconUpload, IconWave, IconNotes, IconMic, IconSettings, IconLogout } from "./icons";
 import { useApp } from "@/context/AppContext";
 
 const nav = [
@@ -22,6 +23,7 @@ export default function Sidebar({
 }) {
   const pathname = usePathname();
   const { recordings } = useApp();
+  const { data: session } = useSession();
 
   return (
     <aside
@@ -42,7 +44,7 @@ export default function Sidebar({
           <IconMic className="w-6 h-6 text-white" />
         </div>
         <div>
-          <div className="text-lg font-bold tracking-tight">EchoNotes</div>
+          <div className="text-lg font-bold tracking-tight">DAXA</div>
           <div className="text-[10px] text-muted tracking-[0.15em]">AUDIO → NOTES</div>
         </div>
       </div>
@@ -73,7 +75,29 @@ export default function Sidebar({
         })}
       </nav>
 
-      <div className="mt-auto pt-6">
+      <div className="mt-auto space-y-3 pt-6">
+        {session?.user && (
+          <div className="flex items-center gap-2.5 rounded-xl border border-overlay/[0.08] bg-overlay/[0.03] px-3 py-2.5">
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-neon to-neon2 text-xs font-bold text-white">
+              {(session.user.name ?? session.user.email ?? "?")[0]?.toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12.5px] font-semibold">
+                {session.user.name ?? "Signed in"}
+              </div>
+              <div className="truncate text-[11px] text-muted">{session.user.email}</div>
+            </div>
+            <button
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              title="Sign out"
+              aria-label="Sign out"
+              className="text-muted transition-colors hover:text-neon3"
+            >
+              <IconLogout className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
         <div className="rounded-2xl border border-overlay/[0.08] p-4 bg-overlay/[0.03]">
           <div className="text-xs font-semibold text-neon2 mb-1">Live pipeline</div>
           <p className="text-[11px] text-muted leading-relaxed">
