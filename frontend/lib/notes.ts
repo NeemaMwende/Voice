@@ -7,6 +7,18 @@ export type Speaker = {
   color: string;
 };
 
+/**
+ * One sentence of a turn. `label` is the relevance verdict: "business" content
+ * feeds the notes (and later the SOP), "smalltalk" is set aside — but never
+ * deleted, so the transcript can always show what was excluded and why.
+ */
+export type SentenceSpan = {
+  raw: string;
+  clean: string;
+  label: "business" | "smalltalk";
+  reason?: string;
+};
+
 export type Segment = {
   speakerId: string;
   /** start offset in seconds */
@@ -15,22 +27,40 @@ export type Segment = {
   endSec?: number;
   /** exactly what was said — fillers, stutters, background noise */
   raw: string;
-  /** the same turn after noise + filler removal */
+  /** the same turn after noise + filler removal; every topic still present */
   clean: string;
   /** mean of per-word model certainty (0..1); undefined on legacy rows */
   confidence?: number | null;
   /** per-word data from the backend; undefined on legacy rows */
   words?: { start: number; end: number; text: string; p: number | null }[];
+  /** cleaned business content only, with the small talk dropped */
+  relevant?: string;
+  /** per-sentence breakdown; absent on recordings made before this existed */
+  sentences?: SentenceSpan[];
 };
 
-/** Shape of a transcription result, independent of the id/file metadata. */
+/**
+ * Shape of a transcription result, independent of the id/file metadata.
+ *
+ * The note sections (`summary` … `outline`) are what the Notes tab renders —
+ * the raw transcript lives only in `transcript`/`segments` and is shown on the
+ * Transcript tab. Everything after `key` is optional so recordings saved before
+ * those sections existed still load.
+ */
 export type NoteContent = {
   title: string;
   transcript: string;
   speakers: Speaker[];
   segments: Segment[];
+  /** overview — the "what was this about" paragraph(s) */
   summary: NoteSection[];
+  /** key points */
   key: string[];
+  actionItems?: string[];
+  /** themed groups: decisions, risks, numbers, … */
+  insights?: NoteSection[];
+  /** chronological topic-by-topic breakdown of the conversation */
+  outline?: NoteSection[];
   tags: string[];
   durationSec: number;
 };

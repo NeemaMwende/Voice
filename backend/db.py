@@ -56,6 +56,9 @@ class Recording(Base):
     segments: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     summary: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     key_points: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    action_items: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    insights: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    outline: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     tags: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     peaks: Mapped[List[Any]] = mapped_column(JSONB, default=list)  # waveform envelope 0..1
 
@@ -74,6 +77,9 @@ class Recording(Base):
             "segments": self.segments or [],
             "summary": self.summary or [],
             "key": self.key_points or [],
+            "actionItems": self.action_items or [],
+            "insights": self.insights or [],
+            "outline": self.outline or [],
             "tags": self.tags or [],
             "peaks": self.peaks or [],
         }
@@ -94,6 +100,9 @@ class Recording(Base):
             segments=data.get("segments") or [],
             summary=data.get("summary") or [],
             key_points=data.get("key") or [],
+            action_items=data.get("actionItems") or [],
+            insights=data.get("insights") or [],
+            outline=data.get("outline") or [],
             tags=data.get("tags") or [],
             peaks=data.get("peaks") or [],
         )
@@ -120,7 +129,7 @@ def init_db() -> None:
     self-heals that drift on each startup:
 
       * add the JSONB payload columns (speakers, segments, summary, key_points,
-        tags)
+        tags, action_items, insights, outline, peaks)
       * convert legacy column types to the current model's (epoch-ms bigint
         ``created_at``, integer ``duration_sec``)
       * drop legacy columns the current model doesn't manage (source, status,
@@ -128,7 +137,17 @@ def init_db() -> None:
     """
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
-        for col in ("speakers", "segments", "summary", "key_points", "tags", "peaks"):
+        for col in (
+            "speakers",
+            "segments",
+            "summary",
+            "key_points",
+            "tags",
+            "action_items",
+            "insights",
+            "outline",
+            "peaks",
+        ):
             conn.execute(
                 text(
                     f"ALTER TABLE recordings ADD COLUMN IF NOT EXISTS {col} "

@@ -22,6 +22,10 @@ const config: Config = {
         bar: "rgb(var(--bar) / <alpha-value>)",
         toast: "var(--toast)",
         ok: "#2ee6a6",
+        // off-topic / small-talk marker in the transcript — deliberately a
+        // different hue from neon3 (fillers) so the two kinds of removal are
+        // distinguishable at a glance.
+        warn: "#ffb454",
       },
       boxShadow: {
         card: "0 20px 60px -20px rgba(0,0,0,0.8)",

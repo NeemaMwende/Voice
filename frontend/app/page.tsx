@@ -47,16 +47,22 @@ export default function OverviewPage() {
           ) : (
             <div className="space-y-3">
               {recordings.slice(0, 5).map((r) => (
-                <div key={r.id} className="flex items-center gap-4 rounded-2xl border border-overlay/[0.07] bg-overlay/[0.03] p-3.5">
-                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-neon to-neon3">
+                <Link
+                  key={r.id}
+                  href={`/notes?id=${r.id}`}
+                  className="group flex items-center gap-4 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-3.5 transition-all hover:-translate-y-0.5 hover:border-neon/40 hover:bg-white/[0.06]"
+                >
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-neon to-neon3 transition-transform group-hover:scale-105">
                     <IconPlay className="w-4 h-4 text-white" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="truncate text-[13.5px] font-semibold">{r.title}</div>
+                    <div className="truncate text-[13.5px] font-semibold transition-colors group-hover:text-neon2">
+                      {r.title}
+                    </div>
                     <div className="text-[11.5px] text-muted truncate">{r.fileName}</div>
                   </div>
                   <div className="text-xs text-neon2 shrink-0">{fmtDuration(r.durationSec)}</div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
