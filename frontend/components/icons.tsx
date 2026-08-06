@@ -109,3 +109,39 @@ export const IconUsers = ({ className }: P) => (
     <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
   </svg>
 );
+
+export const IconDoc = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M15 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6z" />
+    <path d="M15 2v4h4M9 13h6M9 17h6M9 9h2" />
+  </svg>
+);
+
+export const IconEdit = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+  </svg>
+);
+
+export const IconFilePdf = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <path d="M14 2v6h6" />
+    <path d="M8 15h1.5a1.25 1.25 0 0 0 0-2.5H8V18M13.5 12.5V18h.8a1.7 1.7 0 0 0 1.7-1.7v-2.1a1.7 1.7 0 0 0-1.7-1.7zM18.5 18v-5.5" />
+  </svg>
+);
+
+export const IconAlert = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+    <path d="M12 9v4M12 17h.01" />
+  </svg>
+);
+
+export const IconRefresh = ({ className }: P) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={base} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12a9 9 0 1 1-3.5-7.1" />
+    <path d="M21 4v5h-5" />
+  </svg>
+);
