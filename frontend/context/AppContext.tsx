@@ -18,6 +18,7 @@ type AppState = {
   loading: boolean;
   addRecording: (r: Recording) => void;
   removeRecording: (id: string) => void;
+  patchRecording: (id: string, patch: Partial<Recording>) => void;
 };
 
 const AppContext = createContext<AppState | null>(null);
@@ -65,8 +66,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   };
 
+  // Local-only patch, for fields the backend already owns. The SOP endpoints
+  // persist server-side themselves, so re-POSTing the whole recording here would
+  // be a redundant round trip — and a chance to clobber it.
+  const patchRecording = (id: string, patch: Partial<Recording>) => {
+    setRecordings((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
   return (
-    <AppContext.Provider value={{ recordings, loading, addRecording, removeRecording }}>
+    <AppContext.Provider
+      value={{ recordings, loading, addRecording, removeRecording, patchRecording }}
+    >
       {children}
     </AppContext.Provider>
   );

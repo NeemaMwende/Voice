@@ -3,6 +3,14 @@ venv
 media
 __pycache__
 
+# DeepFilterNet binary (~36 MB, fetched by scripts/install_deep_filter.sh)
+bin/
+
+# Relevance filter artefacts — rebuild with build_dataset.py + finetune.py.
+# The dataset is derived from public corpora and the checkpoint is ~570 MB.
+data/
+models/
+
 # Python
 backend/venv/
 venv/

@@ -22,16 +22,21 @@ from dotenv import load_dotenv
 
 load_dotenv()  # read backend/.env (HF_TOKEN, OLLAMA_URL, OLLAMA_MODEL, PG_*, …)
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
 import cleaning
+import denoise
 import diarization
 import progress
 import relevance
+import rewrite
+import sop as sop_writer
+import speaker_merge
 import summarization
 import vad
 import db
@@ -118,6 +123,9 @@ class SentenceSpan(BaseModel):
     label: str = "business"
     # Why it was set aside; only present on small talk.
     reason: str = ""
+    # P(business) from the fine-tuned classifier, for tuning RELEVANCE_THRESHOLD.
+    # 1.0 when the deterministic keep-override fired or no classifier ran.
+    relevance: float = 1.0
 
 
 class SpeakerSegment(BaseModel):
@@ -128,9 +136,12 @@ class SpeakerSegment(BaseModel):
     text: str
     # Same turn with lexical noise stripped, but every topic still present.
     clean: str = ""
-    # Business content only: cleaned, minus the small talk. This is the text an
-    # SOP would be written from. Empty when the whole turn was incidental.
+    # Business content only: cleaned, minus the small talk. This is what the
+    # transcript renders. Empty when the whole turn was incidental.
     relevant: str = ""
+    # The same business content with its wording repaired — see rewrite.py. This
+    # is the text the notes and the business record are written from.
+    polished: str = ""
     # Per-sentence breakdown backing the transcript's two-colour strikethrough.
     sentences: List[SentenceSpan] = []
 
@@ -327,24 +338,35 @@ def build_default_speaker_segments(
     return result
 
 
+# Which field backs each tier, and what to fall back to when the stage that
+# writes it never ran. A missing key means exactly that; an empty *value* is a
+# real answer — the turn had nothing at this tier — so it is never filled in
+# from a dirtier tier.
+_TIERS = {
+    "polished": ("polished", "relevant", "clean", "text"),
+    "relevant": ("relevant", "clean", "text"),
+    "clean": ("clean", "text"),
+    "verbatim": ("text",),
+}
+
+
 def labeled_transcript(segments: List[Dict[str, Any]], *, tier: str = "clean") -> str:
     """``Speaker 1: …`` transcript at the requested cleanliness tier.
 
     ``tier="clean"`` keeps every topic with the lexical noise removed;
-    ``tier="relevant"`` additionally drops the small talk. A turn that reduces
-    to nothing at the requested tier is omitted entirely rather than emitted as
-    a bare speaker label.
+    ``tier="relevant"`` additionally drops the small talk; ``tier="polished"``
+    is that same business content with its wording repaired (rewrite.py). A turn
+    that reduces to nothing at the requested tier is omitted entirely rather
+    than emitted as a bare speaker label.
     """
+    keys = _TIERS.get(tier, _TIERS["clean"])
     lines = []
     for seg in segments:
-        # A missing key means that stage never ran, so fall back a tier. An
-        # empty value is a real answer — the turn had nothing at this tier.
-        if tier == "relevant" and "relevant" in seg:
-            text = seg["relevant"]
-        elif "clean" in seg:
-            text = seg["clean"]
-        else:
-            text = seg["text"]
+        text = seg["text"]
+        for key in keys:
+            if key in seg:
+                text = seg[key]
+                break
         if text.strip():
             lines.append(f"{seg['speaker']}: {text}")
     return "\n\n".join(lines)
@@ -385,10 +407,27 @@ def health():
         "device": DEVICE,
         "diarization_available": diarization.is_available(),
         "diarization_note": diarization.unavailable_reason(),
+        "denoise_available": denoise.is_available(),
+        "denoise_note": denoise.unavailable_reason(),
+        "speaker_merge": speaker_merge.ENABLED,
+        "speaker_merge_threshold": speaker_merge.THRESHOLD,
         "silero_vad": vad.ENABLED,
+        "silero_vad_backend": vad.backend(),
         "verbatim_prompt": VERBATIM,
         "relevance_filter": relevance.ENABLED,
-        "relevance_model": relevance.MODEL,
+        # "model" = the fine-tuned classifier; "llm" = the Ollama fallback,
+        # which is what runs until finetune.py has produced a checkpoint.
+        "relevance_backend": relevance.backend(),
+        "relevance_model": relevance.model_id(),
+        "relevance_note": relevance.unavailable_reason(),
+        "relevance_threshold": relevance.KEEP_THRESHOLD,
+        "rewrite": rewrite.ENABLED,
+        "rewrite_model": rewrite.MODEL,
+        # SOPs are generated on request, per recording — never as part of
+        # /transcribe. See sop.py.
+        "sop": sop_writer.ENABLED,
+        "sop_model": sop_writer.MODEL,
+        "sop_pdf": sop_writer.pdf_available(),
     }
 
 
@@ -424,12 +463,24 @@ def _run_transcription(
     audio_path, audio_url = save_upload(file)
     progress.update(job_id, 8, "uploading", "Saving audio")
 
-    # Silero VAD pre-pass: decode once, then cut the silence out so Whisper and
-    # pyannote only ever process speech. Both stages cost time proportional to
-    # the audio they're handed, so this is where the runtime saving comes from.
-    # `speech` is None when the pre-pass is off or found nothing — in that case
-    # everything below falls back to the full audio, unchanged.
-    full_audio = vad.decode(audio_path)
+    # Two-stage audio clean-up before anything transcribes:
+    #
+    #   1. DeepFilterNet (denoise.py) strips background noise — fans, traffic,
+    #      keyboards, mic hiss. Returns 16 kHz mono float32 already, so it
+    #      replaces the decode rather than adding one; None means it's off or
+    #      it failed, and we decode the original instead.
+    #   2. Silero VAD (vad.py) cuts the silence out so Whisper and pyannote only
+    #      ever process speech. Both cost time proportional to the audio they're
+    #      handed, so this is where the runtime saving comes from.
+    #
+    # Neither stage is allowed to be fatal: `speech` is None when the pre-pass
+    # is off or found nothing, and everything below then falls back to the full
+    # audio, unchanged. Denoising preserves length sample-for-sample, so it
+    # doesn't disturb any timestamp.
+    progress.update(job_id, 9, "uploading", "Removing background noise")
+    full_audio = denoise.denoise(audio_path)
+    if full_audio is None:
+        full_audio = vad.decode(audio_path)
     original_duration = len(full_audio) / vad.SAMPLE_RATE
     progress.update(job_id, 12, "uploading", "Detecting speech")
     speech = vad.trim_silence(full_audio)
@@ -479,7 +530,11 @@ def _run_transcription(
         turns = diarization.diarize(
             audio_path,
             num_speakers=num_speakers,
-            waveform=speech.audio if speech is not None else None,
+            # Hand over the same cleaned waveform Whisper got — trimmed if the
+            # VAD pre-pass ran, full-length otherwise. Either way it's the
+            # denoised audio, which is what stops pyannote from splitting one
+            # voice into several when the noise floor shifts.
+            waveform=speech.audio if speech is not None else full_audio,
         )
     except diarization.DiarizationUnavailable as exc:
         print(f"[diarization] unavailable: {exc}")
@@ -516,15 +571,27 @@ def _run_transcription(
     tally = relevance.counts(speaker_segments)
     print(
         f"[relevance] {tally['smalltalk']} of {tally['total']} sentences "
-        f"set aside as small talk"
+        f"set aside as small talk ({relevance.backend()})"
+    )
+
+    # Repair the wording of what survived. Dropping the small talk out of the
+    # middle of a turn can leave it reading in fragments, and fragments are what
+    # make a local summarizer produce mush. The rewrite goes into `polished` and
+    # leaves `relevant` — what the transcript UI shows — untouched.
+    progress.update(job_id, 80, "rewriting", "Tidying the business transcript")
+    speaker_segments = rewrite.polish_segments(
+        speaker_segments,
+        on_progress=lambda frac: progress.update(
+            job_id, 80 + 4 * frac, "rewriting", "Tidying the business transcript"
+        ),
     )
 
     # Summarize into the full note set (best-effort; never fatal). Notes are
-    # built from the business-only tier — small talk would otherwise show up as
-    # "action items" — and stay speaker-labelled so they can attribute by name.
-    progress.update(job_id, 80, "analyzing", "Writing notes")
+    # built from the polished business tier — small talk would otherwise show up
+    # as "action items" — and stay speaker-labelled so they can attribute by name.
+    progress.update(job_id, 84, "analyzing", "Writing notes")
     notes_source = (
-        labeled_transcript(speaker_segments, tier="relevant")
+        labeled_transcript(speaker_segments, tier="polished")
         or labeled_transcript(speaker_segments)
         or transcript
     )
@@ -537,7 +604,7 @@ def _run_transcription(
         result = summarization.summarize(
             notes_source,
             on_progress=lambda frac, label: progress.update(
-                job_id, 80 + 12 * frac, "analyzing", label
+                job_id, 84 + 9 * frac, "analyzing", label
             ),
         )
         summary_text = result["summary"] or None
@@ -557,7 +624,7 @@ def _run_transcription(
             summarization.summarize_business(
                 notes_source,
                 on_progress=lambda frac: progress.update(
-                    job_id, 92 + 6 * frac, "analyzing", "Writing the business record"
+                    job_id, 93 + 5 * frac, "analyzing", "Writing the business record"
                 ),
             )
             or None
@@ -588,6 +655,8 @@ def _run_transcription(
 # reload them after a refresh instead of losing everything from memory.
 # ---------------------------------------------------------------------------
 
+_NO_RECORDING = "Recording not found."
+
 
 @app.get("/recordings")
 def list_recordings() -> List[Dict[str, Any]]:
@@ -606,7 +675,7 @@ def get_recording(recording_id: str) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         row = session.get(db.Recording, recording_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Recording not found.")
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
         return row.to_dict()
 
 
@@ -618,6 +687,11 @@ def create_recording(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         existing = session.get(db.Recording, str(payload["id"]))
         if existing is not None:
+            # A re-save must not silently discard a generated SOP: the frontend's
+            # Recording only carries one if it happened to be loaded, and the SOP
+            # endpoints below are the authority on that field.
+            if not payload.get("sop") and existing.sop:
+                payload = {**payload, "sop": existing.sop}
             session.delete(existing)
             session.flush()
         row = db.Recording.from_dict(payload)
@@ -631,7 +705,7 @@ def delete_recording(recording_id: str) -> Dict[str, Any]:
     with db.SessionLocal() as session:
         row = session.get(db.Recording, recording_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Recording not found.")
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
         audio_url = row.audio_url or ""
         session.delete(row)
         session.commit()
@@ -645,6 +719,131 @@ def delete_recording(recording_id: str) -> Dict[str, Any]:
             print(f"[media] could not delete {media_file}: {exc}")
 
     return {"status": "deleted", "id": recording_id}
+
+
+# ---------------------------------------------------------------------------
+# Standard Operating Procedures. Generated on request, one recording at a time —
+# never as part of /transcribe, because most conversations have no procedure in
+# them and the user is the one who decides. See sop.py.
+# ---------------------------------------------------------------------------
+
+
+def _load_recording(recording_id: str) -> Dict[str, Any]:
+    with db.SessionLocal() as session:
+        row = session.get(db.Recording, recording_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
+        return row.to_dict()
+
+
+def _store_sop(recording_id: str, document: Dict[str, Any]) -> Dict[str, Any]:
+    with db.SessionLocal() as session:
+        row = session.get(db.Recording, recording_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=_NO_RECORDING)
+        row.sop = document
+        session.commit()
+        return dict(document)
+
+
+def _require_sop(recording_id: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    recording = _load_recording(recording_id)
+    document = recording.get("sop") or {}
+    if not document:
+        raise HTTPException(
+            status_code=404, detail="No SOP has been generated for this recording yet."
+        )
+    return recording, document
+
+
+@app.get("/recordings/{recording_id}/sop/assessment")
+def sop_assessment(recording_id: str) -> Dict[str, Any]:
+    """Whether this recording looks worth writing an SOP from.
+
+    Heuristic only — no model runs — so the UI can show it immediately and let
+    the user make the call. ``suitable: false`` is advice, not a refusal.
+    """
+    return sop_writer.assess(_load_recording(recording_id))
+
+
+@app.post("/recordings/{recording_id}/sop")
+def generate_sop(
+    recording_id: str, job_id: Optional[str] = Query(None)
+) -> Dict[str, Any]:
+    """Write (or rewrite) the SOP for a recording and persist it.
+
+    Minutes of local-model time, so it reports progress through the same
+    /progress/<job_id> channel the transcription uses. A 422 means the model read
+    the conversation and found no procedure in it to document — a real answer,
+    which the UI shows as-is.
+    """
+    recording = _load_recording(recording_id)
+    progress.start(job_id)
+    try:
+        document = sop_writer.generate(
+            recording,
+            on_progress=lambda frac, label: progress.update(
+                job_id, 5 + 90 * frac, "drafting", label
+            ),
+        )
+    except sop_writer.SopUnavailable as exc:
+        progress.finish(job_id, failed=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        progress.finish(job_id, failed=True)
+        raise
+
+    stored = _store_sop(recording_id, document)
+    progress.finish(job_id)
+    return stored
+
+
+@app.put("/recordings/{recording_id}/sop")
+def save_sop(recording_id: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Persist a user-edited SOP. Re-validated server-side; provenance is kept."""
+    _, existing = _require_sop(recording_id)
+    return _store_sop(recording_id, sop_writer.sanitize(payload, existing))
+
+
+@app.delete("/recordings/{recording_id}/sop")
+def discard_sop(recording_id: str) -> Dict[str, Any]:
+    """Throw the SOP away, leaving the recording itself untouched."""
+    _load_recording(recording_id)
+    _store_sop(recording_id, {})
+    return {"status": "deleted", "id": recording_id}
+
+
+@app.get("/recordings/{recording_id}/sop.txt")
+def download_sop_text(recording_id: str) -> Response:
+    recording, document = _require_sop(recording_id)
+    body = sop_writer.render_text(document, recording)
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{sop_writer.filename(document, "txt")}"'
+            )
+        },
+    )
+
+
+@app.get("/recordings/{recording_id}/sop.pdf")
+def download_sop_pdf(recording_id: str) -> Response:
+    recording, document = _require_sop(recording_id)
+    try:
+        body = sop_writer.render_pdf(document, recording)
+    except sop_writer.SopUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{sop_writer.filename(document, "pdf")}"'
+            )
+        },
+    )
 
 
 if __name__ == "__main__":

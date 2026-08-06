@@ -54,6 +54,10 @@ class Recording(Base):
     # Prose account of the business content — the SOP's source text.
     business_summary: Mapped[str] = mapped_column(Text, default="")
 
+    # The generated Standard Operating Procedure, or {} when the user never asked
+    # for one — most conversations aren't procedural, so this is empty by design.
+    sop: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+
     speakers: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     segments: Mapped[List[Any]] = mapped_column(JSONB, default=list)
     summary: Mapped[List[Any]] = mapped_column(JSONB, default=list)
@@ -74,6 +78,9 @@ class Recording(Base):
             "durationSec": self.duration_sec,
             "transcript": self.transcript,
             "businessSummary": self.business_summary or "",
+            # null rather than {} when there is no SOP: an empty object is truthy
+            # in JavaScript, so {} would make every recording look like it had one.
+            "sop": self.sop or None,
             "audioUrl": self.audio_url or None,
             "speakers": self.speakers or [],
             "segments": self.segments or [],
@@ -97,6 +104,7 @@ class Recording(Base):
             duration_sec=int(data.get("durationSec") or 0),
             transcript=data.get("transcript") or "",
             business_summary=data.get("businessSummary") or "",
+            sop=data.get("sop") or {},
             audio_url=data.get("audioUrl") or "",
             speakers=data.get("speakers") or [],
             segments=data.get("segments") or [],
@@ -113,6 +121,7 @@ class Recording(Base):
 # ``create_all`` only creates missing *tables*, so existing installs need these
 # filled in explicitly.
 _JSON_LIST = "JSONB NOT NULL DEFAULT '[]'::jsonb"
+_JSON_OBJECT = "JSONB NOT NULL DEFAULT '{}'::jsonb"
 _TEXT = "TEXT NOT NULL DEFAULT ''"
 
 _ADDED_COLUMNS: Dict[str, str] = {
@@ -120,6 +129,7 @@ _ADDED_COLUMNS: Dict[str, str] = {
     "insights": _JSON_LIST,
     "outline": _JSON_LIST,
     "business_summary": _TEXT,
+    "sop": _JSON_OBJECT,
 }
 
 
